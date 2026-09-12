@@ -703,7 +703,7 @@ func (s *Server) Handler() http.Handler {
                     <span class="step-badge">2</span>
                     <div>
                         <strong>Run the Installer</strong>
-                        <p>Launch the installer and press <kbd>Enter</kbd> to accept your auto-detected <strong>Lunaris V.2</strong> instance. Playing in VR? Press <kbd>v</kbd> in the installer (or pass <code>--vr</code>) to enable Vivecraft. The installer automatically hooks CurseForge Java with zero manual configuration.</p>
+                        <p>Double-click the downloaded installer to open the setup window. Select your auto-detected <strong>Lunaris V.2</strong> instance, choose whether to enable Windows VR, and click <strong>Install & Hook CurseForge</strong>. Zero manual launcher configuration required.</p>
                     </div>
                 </div>
                 <div class="step-item">

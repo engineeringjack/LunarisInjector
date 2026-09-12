@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slide/LunarisInjector/pkg/config"
+	"github.com/slide/LunarisInjector/pkg/gui"
 	"github.com/slide/LunarisInjector/pkg/injector"
 	"github.com/slide/LunarisInjector/pkg/installer"
 	"github.com/slide/LunarisInjector/pkg/manifest"
@@ -63,7 +64,7 @@ func main() {
 	}
 
 	if len(args) == 0 {
-		printUsage()
+		cmdGUI(nil)
 		return
 	}
 
@@ -73,7 +74,7 @@ func main() {
 // isAdministrativeCommand checks if the first argument is a Lunaris CLI subcommand.
 func isAdministrativeCommand(cmd string) bool {
 	switch strings.ToLower(cmd) {
-	case "install", "uninstall", "server", "serve", "generate", "gen", "verify", "check", "instances", "list":
+	case "gui", "install", "uninstall", "server", "serve", "generate", "gen", "verify", "check", "instances", "list":
 		return true
 	default:
 		return false
@@ -103,6 +104,8 @@ func isMinecraftLaunch(args []string) bool {
 
 func handleAdminCommand(args []string) {
 	switch args[0] {
+	case "gui":
+		cmdGUI(args[1:])
 	case "run", "inject":
 		runInjector(args[1:], "")
 	case "install":
@@ -233,6 +236,8 @@ func cmdInstall(args []string) {
 	profileID := fs.String("profile-id", "", "Profile ID in launcher_profiles.json (optional)")
 	vrFlag := fs.Bool("vr", false, "Enable optional Windows VR mods & configs (Vivecraft)")
 	enableVRFlag := fs.Bool("enable-vr", false, "Alias for --vr")
+	cliFlag := fs.Bool("cli", false, "Run in interactive terminal mode instead of graphical installer")
+	guiFlag := fs.Bool("gui", false, "Force launch graphical installer")
 	_ = fs.Parse(args)
 
 	// Non-interactive mode (when --instance is explicitly passed)
@@ -268,7 +273,13 @@ func cmdInstall(args []string) {
 		return
 	}
 
-	// Interactive mode
+	// Default to graphical installer unless --cli was explicitly specified
+	if !*cliFlag || *guiFlag {
+		cmdGUI(args)
+		return
+	}
+
+	// Interactive CLI mode
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("╭─────────────────────────────────────────────────────────────╮")
@@ -811,15 +822,35 @@ func cmdListInstances() {
 	}
 }
 
+func cmdGUI(args []string) {
+	fs := flag.NewFlagSet("gui", flag.ExitOnError)
+	portFlag := fs.Int("port", 0, "Port for GUI server (0 for random available port)")
+	noBrowser := fs.Bool("no-browser", false, "Do not auto-open browser window")
+	serverURL := fs.String("server", config.DefaultServerURL, "Sync server URL")
+	_ = fs.Parse(args)
+
+	srv := gui.New(gui.GUIOptions{
+		Port:        *portFlag,
+		OpenBrowser: !*noBrowser,
+		ServerURL:   *serverURL,
+	})
+
+	if err := srv.Start(); err != nil {
+		fmt.Printf("GUI error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func printUsage() {
 	fmt.Printf(`LunarisInjector v%s - Minecraft Modpack Auto-Synchronizer & Launch Wrapper
 
 USAGE:
-  lunaris <command> [arguments]
-  OR configure lunaris as the Java Executable in your launcher / CurseForge instance.
+  lunaris [command] [arguments]
+  Double-click or run with no arguments to launch the graphical installer.
 
 COMMANDS:
-  install       Interactive or CLI setup to hook an instance into Lunaris
+  gui           Launch the modern graphical web installer interface
+  install       Set up an instance (opens GUI by default; pass --cli for terminal)
   uninstall     Revert an instance back to normal
   server        Run a built-in sync server with live manifest & file downloads
   generate      Generate a static manifest.json from a folder (for Nginx, S3, etc.)
@@ -832,16 +863,21 @@ DEFAULT SERVER:
   https://lunaris.csfrederick.com
 
 EXAMPLES:
-  # 1. Run the modern interactive installer (1-click setup)
-  lunaris install
+  # 1. Launch the graphical installer (same as double-clicking the executable)
+  lunaris
+  # or
+  lunaris gui
 
-  # 2. Run installer with optional Windows VR (Vivecraft) enabled
-  lunaris install --vr
+  # 2. Run terminal interactive installer
+  lunaris install --cli
 
-  # 3. Host a sync server for players from your modpack folder
+  # 3. Non-interactive install with optional Windows VR (Vivecraft) enabled
+  lunaris install --instance ~/.minecraft --vr
+
+  # 4. Host a sync server for players from your modpack folder
   lunaris server --dir ./my-modpack --port 8080
 
-  # 4. Check instance sync status
+  # 5. Check instance sync status
   lunaris verify --instance ~/.minecraft
 
 `, Version)
