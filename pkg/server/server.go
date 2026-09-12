@@ -386,6 +386,81 @@ func (s *Server) Handler() http.Handler {
             margin-bottom: 12px;
         }
 
+        .steps-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-top: 18px;
+        }
+
+        .step-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+        }
+
+        .step-badge {
+            background: #22222b;
+            color: var(--text-heading);
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85rem;
+            font-weight: 700;
+            flex-shrink: 0;
+            border: 1px solid var(--card-border);
+        }
+
+        .download-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .btn {
+            display: inline-block;
+            background: #191920;
+            color: var(--text-main);
+            border: 1px solid var(--card-border);
+            padding: 8px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 0.86rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .btn:hover {
+            background: #252530;
+            color: var(--hover);
+            border-color: #3f3f4e;
+        }
+
+        .btn-primary {
+            background: #282838;
+            color: #ffffff;
+            border-color: #484860;
+            font-weight: 600;
+        }
+
+        .btn-primary:hover {
+            background: #38384f;
+            border-color: #656582;
+        }
+
+        kbd {
+            background: #22222a;
+            border: 1px solid #3c3c4a;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 0.8rem;
+            color: var(--text-heading);
+        }
+
         pre {
             background: var(--code-bg);
             border: 1px solid var(--card-border);
@@ -565,15 +640,36 @@ func (s *Server) Handler() http.Handler {
         </div>
 
         <div class="setup-card">
-            <h2>CurseForge & Client Setup</h2>
-            <p>Connect your CurseForge instance to this server by placing <code>lunaris.json</code> in your instance folder:</p>
-            <pre>{
-  "server_url": "https://lunaris.csfrederick.com",
-  "game_version": "1.20.1",
-  "sync_dirs": ["mods", "config", "global_packs"],
-  "delete_extra": true,
-  "offline_launch": true
-}</pre>
+            <h2>Quick Setup for CurseForge</h2>
+            <div class="steps-grid">
+                <div class="step-item">
+                    <span class="step-badge">1</span>
+                    <div>
+                        <strong>Download the Lunaris Installer</strong>
+                        <p>Select your operating system:</p>
+                        <div class="download-buttons">
+                            <a href="/installers/lunaris-windows-amd64.exe" class="btn btn-primary" download>Download for Windows (.exe)</a>
+                            <a href="/installers/lunaris-linux-amd64" class="btn" download>Download for Linux (64-bit)</a>
+                            <a href="/installers/lunaris-darwin-arm64" class="btn" download>macOS (Apple Silicon)</a>
+                            <a href="/installers/lunaris-darwin-amd64" class="btn" download>macOS (Intel)</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="step-item">
+                    <span class="step-badge">2</span>
+                    <div>
+                        <strong>Run the Installer</strong>
+                        <p>Launch the installer and press <kbd>Enter</kbd> to accept your auto-detected <strong>Lunaris V.2</strong> instance. The installer automatically hooks the CurseForge Java runtime with zero manual configuration.</p>
+                    </div>
+                </div>
+                <div class="step-item">
+                    <span class="step-badge">3</span>
+                    <div>
+                        <strong>Click 'Play' in CurseForge</strong>
+                        <p>Click Play in CurseForge on <strong>Lunaris V.2</strong>. Lunaris will automatically sync all 484 files before starting Minecraft!</p>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="table-controls">
