@@ -61,6 +61,9 @@ func ComputeSHA256(filePath string) (string, int64, error) {
 	return hashStr, size, nil
 }
 
+// DefaultSyncDirs defines the default directories tracked for synchronization.
+var DefaultSyncDirs = []string{"mods", "config", "global_packs"}
+
 // DefaultExcludes returns file patterns that should not be tracked or synced.
 func DefaultExcludes() []string {
 	return []string{
@@ -70,6 +73,10 @@ func DefaultExcludes() []string {
 		"*.crdownload",
 		"lunaris.json",
 		"manifest.json",
+		"embeddium-fingerprint.json",
+		"player-volumes.properties",
+		"category-volumes.properties",
+		"username-cache.json",
 	}
 }
 
@@ -78,22 +85,29 @@ func ShouldIgnore(relPath string, patterns []string) bool {
 	fileName := filepath.Base(relPath)
 	allPatterns := append(DefaultExcludes(), patterns...)
 
+	lowerFile := strings.ToLower(fileName)
+	lowerRel := strings.ToLower(relPath)
+
 	for _, pat := range allPatterns {
-		if matched, _ := filepath.Match(strings.ToLower(pat), strings.ToLower(fileName)); matched {
+		pat = strings.ToLower(pat)
+		if matched, _ := filepath.Match(pat, lowerFile); matched {
 			return true
 		}
-		if matched, _ := filepath.Match(strings.ToLower(pat), strings.ToLower(relPath)); matched {
+		if matched, _ := filepath.Match(pat, lowerRel); matched {
+			return true
+		}
+		if strings.HasSuffix(pat, "/") && strings.HasPrefix(lowerRel, pat) {
 			return true
 		}
 	}
 	return false
 }
 
-// ScanDirectory scans the specified baseDir and subdirectories (e.g. "mods")
+// ScanDirectory scans the specified baseDir and subdirectories (e.g. "mods", "config", "global_packs")
 // and builds a Manifest with SHA-256 hashes and file sizes.
 func ScanDirectory(baseDir string, subDirs []string, ignorePatterns []string) (*Manifest, error) {
 	if len(subDirs) == 0 {
-		subDirs = []string{"mods"}
+		subDirs = DefaultSyncDirs
 	}
 
 	gameVersion := "1.20.1"

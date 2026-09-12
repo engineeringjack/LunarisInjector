@@ -333,6 +333,7 @@ func cmdUninstall(args []string) {
 func cmdServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	dirFlag := fs.String("dir", ".", "Directory to host and sync (e.g. your modpack folder)")
+	dirsFlag := fs.String("dirs", "mods,config,global_packs", "Comma-separated list of directories to sync")
 	portFlag := fs.Int("port", 8080, "Port to listen on")
 	hostFlag := fs.String("host", "0.0.0.0", "Host address to bind to")
 	_ = fs.Parse(args)
@@ -346,9 +347,17 @@ func cmdServer(args []string) {
 	// Ensure mods folder exists if dir is empty
 	_ = os.MkdirAll(filepath.Join(absDir, "mods"), 0755)
 
+	var syncDirs []string
+	for _, d := range strings.Split(*dirsFlag, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			syncDirs = append(syncDirs, d)
+		}
+	}
+
 	srv := server.New(server.ServerOptions{
 		RootDir:  absDir,
-		SyncDirs: []string{"mods", "config"},
+		SyncDirs: syncDirs,
 		Port:     *portFlag,
 		Host:     *hostFlag,
 	})
@@ -362,6 +371,7 @@ func cmdServer(args []string) {
 func cmdGenerate(args []string) {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	dirFlag := fs.String("dir", ".", "Directory containing files to scan")
+	dirsFlag := fs.String("dirs", "mods,config,global_packs", "Comma-separated list of directories to scan")
 	outFlag := fs.String("out", "", "Output path for manifest.json (default: <dir>/manifest.json)")
 	_ = fs.Parse(args)
 
@@ -376,8 +386,16 @@ func cmdGenerate(args []string) {
 		outFile = filepath.Join(absDir, "manifest.json")
 	}
 
+	var syncDirs []string
+	for _, d := range strings.Split(*dirsFlag, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			syncDirs = append(syncDirs, d)
+		}
+	}
+
 	fmt.Printf("Scanning '%s' and generating manifest...\n", absDir)
-	m, err := manifest.ScanDirectory(absDir, []string{"mods", "config"}, nil)
+	m, err := manifest.ScanDirectory(absDir, syncDirs, nil)
 	if err != nil {
 		fmt.Printf("Scan error: %v\n", err)
 		os.Exit(1)

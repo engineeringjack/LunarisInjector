@@ -44,7 +44,7 @@ func New(opts ServerOptions) *Server {
 		opts.Port = 8080
 	}
 	if len(opts.SyncDirs) == 0 {
-		opts.SyncDirs = []string{"mods"}
+		opts.SyncDirs = []string{"mods", "config", "global_packs"}
 	}
 	if opts.AutoRefresh <= 0 {
 		opts.AutoRefresh = 5 * time.Second
@@ -187,22 +187,36 @@ func (s *Server) Handler() http.Handler {
 		}
 
 		var totalBytes int64
+		var modCount, configCount, packCount int
 		for _, f := range m.Files {
 			totalBytes += f.Size
+			if strings.HasPrefix(f.Path, "mods/") {
+				modCount++
+			} else if strings.HasPrefix(f.Path, "config/") {
+				configCount++
+			} else if strings.HasPrefix(f.Path, "global_packs/") {
+				packCount++
+			}
 		}
 
 		data := struct {
-			FileCount  int
-			TotalMB    float64
-			LastScan   string
-			Files      []manifest.FileEntry
-			ServerPort int
+			FileCount   int
+			ModCount    int
+			ConfigCount int
+			PackCount   int
+			TotalMB     float64
+			LastScan    string
+			Files       []manifest.FileEntry
+			ServerPort  int
 		}{
-			FileCount:  len(m.Files),
-			TotalMB:    float64(totalBytes) / (1024 * 1024),
-			LastScan:   s.lastScanned.Format(time.RFC1123),
-			Files:      m.Files,
-			ServerPort: s.opts.Port,
+			FileCount:   len(m.Files),
+			ModCount:    modCount,
+			ConfigCount: configCount,
+			PackCount:   packCount,
+			TotalMB:     float64(totalBytes) / (1024 * 1024),
+			LastScan:    s.lastScanned.Format(time.RFC1123),
+			Files:       m.Files,
+			ServerPort:  s.opts.Port,
 		}
 
 		tmpl := `<!DOCTYPE html>
@@ -526,11 +540,19 @@ func (s *Server) Handler() http.Handler {
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-num">{{.FileCount}}</div>
-                <div class="stat-title">Tracked Mod Files</div>
+                <div class="stat-title">Total Tracked Files</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-num">{{.ModCount}}</div>
+                <div class="stat-title">Mod Files</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-num">{{.ConfigCount}} / {{.PackCount}}</div>
+                <div class="stat-title">Configs / Global Packs</div>
             </div>
             <div class="stat-card">
                 <div class="stat-num">{{printf "%.1f" .TotalMB}} MB</div>
-                <div class="stat-title">Total Repository Size</div>
+                <div class="stat-title">Repository Size</div>
             </div>
             <div class="stat-card">
                 <div class="stat-num">1.20.1</div>
@@ -548,7 +570,7 @@ func (s *Server) Handler() http.Handler {
             <pre>{
   "server_url": "https://lunaris.csfrederick.com",
   "game_version": "1.20.1",
-  "sync_dirs": ["mods"],
+  "sync_dirs": ["mods", "config", "global_packs"],
   "delete_extra": true,
   "offline_launch": true
 }</pre>
@@ -556,7 +578,7 @@ func (s *Server) Handler() http.Handler {
 
         <div class="table-controls">
             <h2>Tracked Files</h2>
-            <input type="text" id="modSearch" class="search-box" placeholder="Filter mods..." onkeyup="filterMods()"/>
+            <input type="text" id="modSearch" class="search-box" placeholder="Filter files (e.g. mods, config)..." onkeyup="filterMods()"/>
         </div>
 
         <div class="table-wrapper">

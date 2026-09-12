@@ -502,7 +502,7 @@ func Install(opts InstallConfig) error {
 	cfg.ServerURL = opts.ServerURL
 	cfg.GameVersion = reqVersion
 	cfg.RealJavaPath = realJava
-	cfg.SyncDirs = []string{"mods"}
+	cfg.SyncDirs = []string{"mods", "config", "global_packs"}
 	cfg.DeleteExtra = true
 	cfg.OfflineLaunch = true
 

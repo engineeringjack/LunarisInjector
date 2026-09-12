@@ -36,13 +36,16 @@ type Config struct {
 	TimeoutSec int `json:"timeout_sec"`
 }
 
+// DefaultSyncDirs defines the default directories synchronized between server and client.
+var DefaultSyncDirs = []string{"mods", "config", "global_packs"}
+
 // DefaultConfig returns the standard default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		ServerURL:     "http://localhost:8080",
 		GameVersion:   "1.20.1",
 		RealJavaPath:  "",
-		SyncDirs:      []string{"mods"},
+		SyncDirs:      []string{"mods", "config", "global_packs"},
 		DeleteExtra:   true,
 		IgnoreFiles:   []string{},
 		OfflineLaunch: true,
@@ -66,7 +69,7 @@ func Load(path string) (*Config, error) {
 		cfg.TimeoutSec = 10
 	}
 	if len(cfg.SyncDirs) == 0 {
-		cfg.SyncDirs = []string{"mods"}
+		cfg.SyncDirs = []string{"mods", "config", "global_packs"}
 	}
 
 	return cfg, nil
