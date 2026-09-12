@@ -1,0 +1,16 @@
+# Binaries & Distributions
+dist/
+bin/
+/lunaris
+/lunaris.exe
+*.exe
+
+# Temp & Backup files
+*.tmp
+*.bak
+*.lunaris.tmp
+*.lunaris.bak
+
+# OS files
+.DS_Store
+Thumbs.db
