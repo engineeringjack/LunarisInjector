@@ -166,6 +166,9 @@ func (s *Server) Handler() http.Handler {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		_ = json.NewEncoder(w).Encode(m)
 	})
 
