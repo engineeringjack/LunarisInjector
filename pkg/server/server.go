@@ -692,10 +692,10 @@ func (s *Server) Handler() http.Handler {
                         <strong>Download the Lunaris Installer</strong>
                         <p>Select your operating system:</p>
                         <div class="download-buttons">
-                            <a href="/installers/lunaris-windows-amd64.exe" class="btn btn-primary" download>Download for Windows (.exe)</a>
-                            <a href="/installers/lunaris-linux-amd64" class="btn" download>Download for Linux (64-bit)</a>
-                            <a href="/installers/lunaris-darwin-arm64" class="btn" download>macOS (Apple Silicon)</a>
-                            <a href="/installers/lunaris-darwin-amd64" class="btn" download>macOS (Intel)</a>
+                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.1" class="btn btn-primary" download>Download for Windows (.exe)</a>
+                            <a href="/installers/lunaris-linux-amd64?v=1.0.1" class="btn" download>Download for Linux (64-bit)</a>
+                            <a href="/installers/lunaris-darwin-arm64?v=1.0.1" class="btn" download>macOS (Apple Silicon)</a>
+                            <a href="/installers/lunaris-darwin-amd64?v=1.0.1" class="btn" download>macOS (Intel)</a>
                         </div>
                     </div>
                 </div>
