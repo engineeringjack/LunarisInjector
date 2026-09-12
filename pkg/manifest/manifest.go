@@ -15,9 +15,19 @@ import (
 
 // FileEntry represents a tracked file in the manifest.
 type FileEntry struct {
-	Path   string `json:"path"`   // Normalized relative path (e.g. "mods/fabric-api.jar")
-	SHA256 string `json:"sha256"` // Hex-encoded SHA-256 hash
-	Size   int64  `json:"size"`   // File size in bytes
+	Path     string `json:"path"`                // Normalized relative path on server (e.g. "mods/foo.jar" or "optional/vr/mods/vivecraft.jar")
+	SHA256   string `json:"sha256"`              // Hex-encoded SHA-256 hash
+	Size     int64  `json:"size"`                // File size in bytes
+	Feature  string `json:"feature,omitempty"`   // Optional feature tag (e.g. "vr")
+	DestPath string `json:"dest_path,omitempty"` // Destination relative path on client (e.g. "mods/vivecraft.jar")
+}
+
+// ClientPath returns the relative destination path on the client machine.
+func (f FileEntry) ClientPath() string {
+	if f.DestPath != "" {
+		return NormalizePath(f.DestPath)
+	}
+	return NormalizePath(f.Path)
 }
 
 // Manifest represents the complete list of files and their expected hashes.
@@ -28,11 +38,29 @@ type Manifest struct {
 	Files           []FileEntry `json:"files"`                      // List of tracked files
 }
 
-// FileMap returns a lookup map of relative path -> FileEntry for quick matching.
+// FileMap returns a lookup map of client relative path -> FileEntry for quick matching.
 func (m *Manifest) FileMap() map[string]FileEntry {
 	res := make(map[string]FileEntry, len(m.Files))
 	for _, f := range m.Files {
-		res[NormalizePath(f.Path)] = f
+		res[f.ClientPath()] = f
+	}
+	return res
+}
+
+// FilteredMap returns a lookup map of client relative path -> FileEntry,
+// filtering out any optional features that are not explicitly enabled.
+func (m *Manifest) FilteredMap(enabledFeatures []string) map[string]FileEntry {
+	featMap := make(map[string]bool, len(enabledFeatures))
+	for _, feat := range enabledFeatures {
+		featMap[strings.ToLower(feat)] = true
+	}
+
+	res := make(map[string]FileEntry, len(m.Files))
+	for _, f := range m.Files {
+		if f.Feature != "" && !featMap[strings.ToLower(f.Feature)] {
+			continue
+		}
+		res[f.ClientPath()] = f
 	}
 	return res
 }
@@ -165,10 +193,22 @@ func ScanDirectory(baseDir string, subDirs []string, ignorePatterns []string) (*
 				return fmt.Errorf("failed to hash %s: %w", path, err)
 			}
 
+			var feature string
+			var destPath string
+			if strings.HasPrefix(normRel, "optional/") {
+				parts := strings.Split(normRel, "/")
+				if len(parts) >= 3 {
+					feature = parts[1]
+					destPath = strings.Join(parts[2:], "/")
+				}
+			}
+
 			manifest.Files = append(manifest.Files, FileEntry{
-				Path:   normRel,
-				SHA256: hash,
-				Size:   size,
+				Path:     normRel,
+				SHA256:   hash,
+				Size:     size,
+				Feature:  feature,
+				DestPath: destPath,
 			})
 			return nil
 		})

@@ -29,6 +29,7 @@ type InstanceInfo struct {
 	CurrentJava      string `json:"current_java"`
 	IsInjected       bool   `json:"is_injected"`
 	ConfiguredServer string `json:"configured_server,omitempty"`
+	EnableVR         bool   `json:"enable_vr"`
 }
 
 // DetectInstances scans known paths for installed Minecraft modpacks and instances.
@@ -227,6 +228,7 @@ func inspectCurseForgeInstance(instPath, fallbackName string) *InstanceInfo {
 		info.IsInjected = true
 		info.ConfiguredServer = cfg.ServerURL
 		info.CurrentJava = cfg.RealJavaPath
+		info.EnableVR = cfg.EnableVR
 	}
 
 	// Check if instance has its own launcher_profiles.json
@@ -300,6 +302,7 @@ func inspectVanillaLauncherProfiles(profilePath string) []InstanceInfo {
 		if cfg, err := config.Load(cfgPath); err == nil {
 			info.IsInjected = true
 			info.ConfiguredServer = cfg.ServerURL
+			info.EnableVR = cfg.EnableVR
 		}
 
 		list = append(list, info)
@@ -362,6 +365,7 @@ func inspectPrismInstance(instPath, fallbackName string) *InstanceInfo {
 	if cfg, err := config.Load(cfgPath); err == nil {
 		info.IsInjected = true
 		info.ConfiguredServer = cfg.ServerURL
+		info.EnableVR = cfg.EnableVR
 	}
 
 	return info
@@ -451,6 +455,7 @@ type InstallConfig struct {
 	ProfileID           string // Optional profile ID to patch
 	RequiredGameVersion string // Required Minecraft version (defaults to "1.20.1")
 	HookCurseForge      *bool  // Whether to hook CurseForge Java runtime (defaults to true)
+	EnableVR            bool   // Whether to sync optional Windows VR mods and configs
 }
 
 // Install sets up LunarisInjector for a given instance.
@@ -524,6 +529,7 @@ func Install(opts InstallConfig) error {
 	cfg.SyncDirs = []string{"mods", "config", "global_packs"}
 	cfg.DeleteExtra = true
 	cfg.OfflineLaunch = true
+	cfg.EnableVR = opts.EnableVR
 
 	cfgPath := filepath.Join(opts.InstanceDir, config.ConfigFileName)
 	if err := cfg.Save(cfgPath); err != nil {

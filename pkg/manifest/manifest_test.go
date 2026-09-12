@@ -71,3 +71,73 @@ func TestScanDirectoryAndSaveLoad(t *testing.T) {
 		t.Errorf("missing mods/example1.jar in filemap")
 	}
 }
+
+func TestManifestFilteredMap(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		Files: []FileEntry{
+			{Path: "mods/core.jar", SHA256: "abc", Size: 100},
+			{Path: "optional/vr/mods/vivecraft.jar", SHA256: "def", Size: 200, Feature: "vr", DestPath: "mods/vivecraft.jar"},
+		},
+	}
+
+	// 1. Without features enabled
+	filteredNoVR := m.FilteredMap(nil)
+	if len(filteredNoVR) != 1 {
+		t.Errorf("expected 1 file without VR, got %d", len(filteredNoVR))
+	}
+	if _, ok := filteredNoVR["mods/core.jar"]; !ok {
+		t.Errorf("expected mods/core.jar present")
+	}
+	if _, ok := filteredNoVR["mods/vivecraft.jar"]; ok {
+		t.Errorf("expected mods/vivecraft.jar omitted when VR not enabled")
+	}
+
+	// 2. With VR feature enabled
+	filteredWithVR := m.FilteredMap([]string{"vr"})
+	if len(filteredWithVR) != 2 {
+		t.Errorf("expected 2 files with VR, got %d", len(filteredWithVR))
+	}
+	vrEntry, ok := filteredWithVR["mods/vivecraft.jar"]
+	if !ok {
+		t.Fatalf("expected mods/vivecraft.jar present in filteredWithVR")
+	}
+	if vrEntry.Path != "optional/vr/mods/vivecraft.jar" {
+		t.Errorf("expected remote path optional/vr/mods/vivecraft.jar, got %s", vrEntry.Path)
+	}
+}
+
+func TestScanDirectoryWithOptional(t *testing.T) {
+	tmp := t.TempDir()
+	vrDir := filepath.Join(tmp, "optional", "vr", "mods")
+	if err := os.MkdirAll(vrDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	testFile := filepath.Join(vrDir, "vivecraft.jar")
+	if err := os.WriteFile(testFile, []byte("vivecraft jar content"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	m, err := ScanDirectory(tmp, []string{"optional"}, nil)
+	if err != nil {
+		t.Fatalf("ScanDirectory failed: %v", err)
+	}
+
+	if len(m.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(m.Files))
+	}
+	f := m.Files[0]
+	if f.Path != "optional/vr/mods/vivecraft.jar" {
+		t.Errorf("expected path optional/vr/mods/vivecraft.jar, got %s", f.Path)
+	}
+	if f.Feature != "vr" {
+		t.Errorf("expected feature vr, got %s", f.Feature)
+	}
+	if f.DestPath != "mods/vivecraft.jar" {
+		t.Errorf("expected dest_path mods/vivecraft.jar, got %s", f.DestPath)
+	}
+	if f.ClientPath() != "mods/vivecraft.jar" {
+		t.Errorf("expected client path mods/vivecraft.jar, got %s", f.ClientPath())
+	}
+}
+

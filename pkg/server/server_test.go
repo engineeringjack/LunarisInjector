@@ -67,7 +67,57 @@ func TestServerManifestAndFileServing(t *testing.T) {
 		t.Errorf("expected file body %q, got %q", string(testModContent), rr2.Body.String())
 	}
 
-	// Test 3: GET / (Dashboard HTML)
+	// Test 3: Optional VR file serving
+	vrDir := filepath.Join(tmpDir, "optional", "vr", "mods")
+	if err := os.MkdirAll(vrDir, 0755); err != nil {
+		t.Fatalf("failed to create vr dir: %v", err)
+	}
+	vrContent := []byte("vivecraft jar content")
+	if err := os.WriteFile(filepath.Join(vrDir, "vivecraft.jar"), vrContent, 0644); err != nil {
+		t.Fatalf("failed to write vr file: %v", err)
+	}
+
+	// Force refresh
+	if _, err := srv.RefreshManifest(); err != nil {
+		t.Fatalf("failed to refresh manifest: %v", err)
+	}
+
+	reqVR := httptest.NewRequest(http.MethodGet, "/manifest.json", nil)
+	rrVR := httptest.NewRecorder()
+	handler.ServeHTTP(rrVR, reqVR)
+
+	var mVR manifest.Manifest
+	if err := json.Unmarshal(rrVR.Body.Bytes(), &mVR); err != nil {
+		t.Fatalf("failed to unmarshal manifest: %v", err)
+	}
+
+	if len(mVR.Files) != 2 {
+		t.Fatalf("expected 2 files in manifest, got %d", len(mVR.Files))
+	}
+	fMap := mVR.FileMap()
+	vrEntry, ok := fMap["mods/vivecraft.jar"]
+	if !ok {
+		t.Fatalf("expected mods/vivecraft.jar in filemap")
+	}
+	if vrEntry.Feature != "vr" {
+		t.Errorf("expected feature vr, got %s", vrEntry.Feature)
+	}
+	if vrEntry.Path != "optional/vr/mods/vivecraft.jar" {
+		t.Errorf("expected path optional/vr/mods/vivecraft.jar, got %s", vrEntry.Path)
+	}
+
+	// GET /optional/vr/mods/vivecraft.jar
+	reqVRFile := httptest.NewRequest(http.MethodGet, "/optional/vr/mods/vivecraft.jar", nil)
+	rrVRFile := httptest.NewRecorder()
+	handler.ServeHTTP(rrVRFile, reqVRFile)
+	if rrVRFile.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for vr file download, got %d", rrVRFile.Code)
+	}
+	if rrVRFile.Body.String() != string(vrContent) {
+		t.Errorf("expected vr body %q, got %q", string(vrContent), rrVRFile.Body.String())
+	}
+
+	// Test 4: GET / (Dashboard HTML)
 	req3 := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr3 := httptest.NewRecorder()
 	handler.ServeHTTP(rr3, req3)

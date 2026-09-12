@@ -231,10 +231,13 @@ func cmdInstall(args []string) {
 	javaFlag := fs.String("java", "", "Path to the real Java binary (auto-detected if empty)")
 	profileFile := fs.String("profile-file", "", "Path to launcher_profiles.json (optional)")
 	profileID := fs.String("profile-id", "", "Profile ID in launcher_profiles.json (optional)")
+	vrFlag := fs.Bool("vr", false, "Enable optional Windows VR mods & configs (Vivecraft)")
+	enableVRFlag := fs.Bool("enable-vr", false, "Alias for --vr")
 	_ = fs.Parse(args)
 
 	// Non-interactive mode (when --instance is explicitly passed)
 	if *instanceFlag != "" {
+		enableVR := *vrFlag || *enableVRFlag
 		err := installer.Install(installer.InstallConfig{
 			InstanceDir:         *instanceFlag,
 			ServerURL:           *serverFlag,
@@ -242,6 +245,7 @@ func cmdInstall(args []string) {
 			RealJavaPath:        *javaFlag,
 			ProfileFile:         *profileFile,
 			ProfileID:           *profileID,
+			EnableVR:            enableVR,
 		})
 		if err != nil {
 			fmt.Printf("❌ Installation failed: %v\n", err)
@@ -249,6 +253,11 @@ func cmdInstall(args []string) {
 		}
 		fmt.Printf("✔ LunarisInjector successfully configured for: %s\n", *instanceFlag)
 		fmt.Printf("  Sync Server URL: %s\n", *serverFlag)
+		if enableVR {
+			fmt.Println("  ✦ Windows VR support (Vivecraft): ENABLED")
+		} else {
+			fmt.Println("  ✦ Windows VR support (Vivecraft): DISABLED (Standard)")
+		}
 		runtimes := installer.FindCurseForgeJavaRuntimeDirs(*instanceFlag)
 		for _, r := range runtimes {
 			if installer.IsCurseForgeJavaHooked(r) {
@@ -286,8 +295,12 @@ func cmdInstall(args []string) {
 	var selectedName string
 	var selectedProfileFile string
 	var selectedProfileID string
+	enableVR := *vrFlag || *enableVRFlag
 
 	if len(compatible) > 0 {
+		if !enableVR && compatible[0].EnableVR {
+			enableVR = true
+		}
 		fmt.Println("\nDetected Minecraft 1.20.1 instance(s):")
 		for i, inst := range compatible {
 			recTag := ""
@@ -296,7 +309,11 @@ func cmdInstall(args []string) {
 			}
 			status := "Ready to connect"
 			if inst.IsInjected {
-				status = fmt.Sprintf("Already hooked (%s)", inst.ConfiguredServer)
+				vrInfo := ""
+				if inst.EnableVR {
+					vrInfo = ", VR: on"
+				}
+				status = fmt.Sprintf("Already hooked (%s%s)", inst.ConfiguredServer, vrInfo)
 			}
 			fmt.Printf("  [%d] %s (%s)%s\n", i+1, inst.Name, inst.Launcher, recTag)
 			fmt.Printf("      Path   : %s\n", inst.Path)
@@ -328,6 +345,9 @@ func cmdInstall(args []string) {
 				selectedName = sel.Name
 				selectedProfileFile = sel.ProfileFile
 				selectedProfileID = sel.ProfileID
+				if !*vrFlag && !*enableVRFlag {
+					enableVR = sel.EnableVR
+				}
 				break
 			}
 			if strings.EqualFold(input, "q") {
@@ -341,6 +361,9 @@ func cmdInstall(args []string) {
 				selectedName = sel.Name
 				selectedProfileFile = sel.ProfileFile
 				selectedProfileID = sel.ProfileID
+				if !*vrFlag && !*enableVRFlag {
+					enableVR = sel.EnableVR
+				}
 				break
 			} else if err == nil && idx == customChoice {
 				break
@@ -367,6 +390,10 @@ func cmdInstall(args []string) {
 			}
 			selectedPath = input
 			selectedName = filepath.Base(input)
+			cfgPath := filepath.Join(input, config.ConfigFileName)
+			if cfg, err := config.Load(cfgPath); err == nil && !*vrFlag && !*enableVRFlag {
+				enableVR = cfg.EnableVR
+			}
 			break
 		}
 	}
@@ -379,26 +406,43 @@ func cmdInstall(args []string) {
 	javaInput := detectedJava
 
 	// Display modern Setup Overview card
-	fmt.Println()
-	fmt.Println("╭── Installation Plan ────────────────────────────────────────╮")
-	fmt.Printf("│  Instance  : %-46s │\n", truncateStr(selectedName, 46))
-	fmt.Printf("│  Location  : %-46s │\n", truncateStr(selectedPath, 46))
-	fmt.Printf("│  Server    : %-46s │\n", truncateStr(serverInput, 46))
-	javaDisplay := javaInput
-	if javaDisplay == "" {
-		javaDisplay = "java (system default)"
+	renderPlan := func() {
+		fmt.Println()
+		fmt.Println("╭── Installation Plan ────────────────────────────────────────╮")
+		fmt.Printf("│  Instance  : %-46s │\n", truncateStr(selectedName, 46))
+		fmt.Printf("│  Location  : %-46s │\n", truncateStr(selectedPath, 46))
+		fmt.Printf("│  Server    : %-46s │\n", truncateStr(serverInput, 46))
+		javaDisplay := javaInput
+		if javaDisplay == "" {
+			javaDisplay = "java (system default)"
+		}
+		fmt.Printf("│  Java 17   : %-46s │\n", truncateStr(javaDisplay, 46))
+		fmt.Println("│  Sync Dirs : mods, config, global_packs                     │")
+		vrStatus := "Disabled (desktop / non-VR)"
+		if enableVR {
+			vrStatus = "Enabled (Windows VR / Vivecraft)"
+		}
+		fmt.Printf("│  Windows VR: %-46s │\n", truncateStr(vrStatus, 46))
+		fmt.Println("╰─────────────────────────────────────────────────────────────╯")
 	}
-	fmt.Printf("│  Java 17   : %-46s │\n", truncateStr(javaDisplay, 46))
-	fmt.Println("│  Sync Dirs : mods, config, global_packs                     │")
-	fmt.Println("╰─────────────────────────────────────────────────────────────╯")
+
+	renderPlan()
 
 	for {
-		fmt.Print("\nReady to install! Press [Enter] to proceed (or 'c' to customize, 'q' to quit): ")
+		fmt.Print("\nReady to install! Press [Enter] to proceed (or 'v' to toggle VR, 'c' to customize, 'q' to quit): ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
 		if input == "" || strings.EqualFold(input, "y") || strings.EqualFold(input, "yes") {
 			break
+		} else if strings.EqualFold(input, "v") {
+			enableVR = !enableVR
+			if enableVR {
+				fmt.Println(">> Windows VR mods (Vivecraft) ENABLED.")
+			} else {
+				fmt.Println(">> Windows VR mods (Vivecraft) DISABLED.")
+			}
+			renderPlan()
 		} else if strings.EqualFold(input, "c") {
 			fmt.Printf("\nSync Server URL [default: %s]: ", serverInput)
 			srvIn, _ := reader.ReadString('\n')
@@ -413,7 +457,21 @@ func cmdInstall(args []string) {
 			if jIn != "" {
 				javaInput = jIn
 			}
-			break
+
+			vrDefault := "n"
+			if enableVR {
+				vrDefault = "y"
+			}
+			fmt.Printf("Enable Windows VR mods (Vivecraft) [y/n, default: %s]: ", vrDefault)
+			vrIn, _ := reader.ReadString('\n')
+			vrIn = strings.TrimSpace(vrIn)
+			if strings.EqualFold(vrIn, "y") || strings.EqualFold(vrIn, "yes") {
+				enableVR = true
+			} else if strings.EqualFold(vrIn, "n") || strings.EqualFold(vrIn, "no") {
+				enableVR = false
+			}
+
+			renderPlan()
 		} else if strings.EqualFold(input, "q") {
 			fmt.Println("Installation cancelled.")
 			return
@@ -431,6 +489,7 @@ func cmdInstall(args []string) {
 		LunarisBinary: selfExe,
 		ProfileFile:   selectedProfileFile,
 		ProfileID:     selectedProfileID,
+		EnableVR:      enableVR,
 	})
 
 	if err != nil {
@@ -470,6 +529,11 @@ func cmdInstall(args []string) {
 	fmt.Printf("  ▸ Instance Folder  : %s\n", selectedPath)
 	fmt.Printf("  ▸ Remote Server    : %s\n", serverInput)
 	fmt.Println("  ▸ Sync Directories : mods, config, global_packs")
+	if enableVR {
+		fmt.Println("  ▸ Windows VR       : ENABLED (Vivecraft & VR configs active)")
+	} else {
+		fmt.Println("  ▸ Windows VR       : DISABLED (Standard desktop play)")
+	}
 
 	runtimes := installer.FindCurseForgeJavaRuntimeDirs(selectedPath)
 	for _, r := range runtimes {
@@ -687,10 +751,15 @@ func cmdVerify(args []string) {
 	}
 
 	fmt.Println("\n=== Verification Report ===")
+	if cfg.EnableVR {
+		fmt.Println("Feature Mode      : Windows VR Enabled (Vivecraft active)")
+	} else {
+		fmt.Println("Feature Mode      : Standard Desktop (VR disabled)")
+	}
 	fmt.Printf("Matches / In Sync : %d files\n", plan.Unchanged)
 	fmt.Printf("Need Download     : %d files (%.2f MB)\n", len(plan.Downloads), float64(plan.TotalBytes)/(1024*1024))
 	for _, d := range plan.Downloads {
-		fmt.Printf("  + [ADD/UPDATE] %s (%d bytes)\n", d.Path, d.Size)
+		fmt.Printf("  + [ADD/UPDATE] %s (%d bytes)\n", d.ClientPath(), d.Size)
 	}
 	fmt.Printf("Obsolete / Delete : %d files\n", len(plan.Deletions))
 	for _, del := range plan.Deletions {
@@ -716,7 +785,11 @@ func cmdListInstances() {
 	for i, inst := range detected {
 		injected := "No"
 		if inst.IsInjected {
-			injected = fmt.Sprintf("Yes (Syncing with: %s)", inst.ConfiguredServer)
+			vrNote := ""
+			if inst.EnableVR {
+				vrNote = ", VR enabled"
+			}
+			injected = fmt.Sprintf("Yes (Syncing with: %s%s)", inst.ConfiguredServer, vrNote)
 		}
 		verStr := inst.GameVersion
 		if verStr == "" {
@@ -762,10 +835,13 @@ EXAMPLES:
   # 1. Run the modern interactive installer (1-click setup)
   lunaris install
 
-  # 2. Host a sync server for players from your modpack folder
+  # 2. Run installer with optional Windows VR (Vivecraft) enabled
+  lunaris install --vr
+
+  # 3. Host a sync server for players from your modpack folder
   lunaris server --dir ./my-modpack --port 8080
 
-  # 3. Check instance sync status
+  # 4. Check instance sync status
   lunaris verify --instance ~/.minecraft
 
 `, Version)

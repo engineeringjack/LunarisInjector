@@ -118,7 +118,12 @@ func (s *Syncer) CalculatePlan(remote *manifest.Manifest) (*Plan, error) {
 	}
 
 	localMap := localManifest.FileMap()
-	remoteMap := remote.FileMap()
+
+	var features []string
+	if s.opts.Config.EnableVR {
+		features = append(features, "vr")
+	}
+	remoteMap := remote.FilteredMap(features)
 
 	plan := &Plan{
 		Downloads: []manifest.FileEntry{},
@@ -221,13 +226,14 @@ func (s *Syncer) downloadFiles(ctx context.Context, downloads []manifest.FileEnt
 				}
 
 				downloadURL := buildFileURL(baseURL, entry.Path)
-				targetPath := filepath.Join(s.opts.GameDir, filepath.FromSlash(entry.Path))
+				clientPath := entry.ClientPath()
+				targetPath := filepath.Join(s.opts.GameDir, filepath.FromSlash(clientPath))
 
-				s.opts.Logger("[Lunaris] Downloading: %s (%.2f MB)...", entry.Path, float64(entry.Size)/(1024*1024))
+				s.opts.Logger("[Lunaris] Downloading: %s (%.2f MB)...", clientPath, float64(entry.Size)/(1024*1024))
 
 				err := s.downloadSingleFile(ctx, downloadURL, targetPath, entry.SHA256)
 				if err != nil {
-					errCh <- fmt.Errorf("failed to download %s: %w", entry.Path, err)
+					errCh <- fmt.Errorf("failed to download %s: %w", clientPath, err)
 					return
 				}
 
@@ -235,7 +241,7 @@ func (s *Syncer) downloadFiles(ctx context.Context, downloads []manifest.FileEnt
 				curBytes := atomic.AddInt64(&completedBytes, entry.Size)
 
 				if s.opts.OnProgress != nil {
-					s.opts.OnProgress(entry.Path, int(done), int(totalCount), curBytes, totalBytes)
+					s.opts.OnProgress(clientPath, int(done), int(totalCount), curBytes, totalBytes)
 				}
 			}
 		}()

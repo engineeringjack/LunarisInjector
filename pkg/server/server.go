@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +65,22 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 
 	entries := []manifest.FileEntry{}
 
-	for _, subDir := range s.opts.SyncDirs {
+	scanDirs := append([]string{}, s.opts.SyncDirs...)
+	optDir := filepath.Join(s.opts.RootDir, "optional")
+	if info, err := os.Stat(optDir); err == nil && info.IsDir() {
+		hasOpt := false
+		for _, d := range scanDirs {
+			if d == "optional" {
+				hasOpt = true
+				break
+			}
+		}
+		if !hasOpt {
+			scanDirs = append(scanDirs, "optional")
+		}
+	}
+
+	for _, subDir := range scanDirs {
 		targetPath := filepath.Join(s.opts.RootDir, subDir)
 		info, err := os.Stat(targetPath)
 		if os.IsNotExist(err) {
@@ -91,13 +107,25 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 				return nil
 			}
 
+			var feature string
+			var destPath string
+			if strings.HasPrefix(normRel, "optional/") {
+				parts := strings.Split(normRel, "/")
+				if len(parts) >= 3 {
+					feature = parts[1]
+					destPath = strings.Join(parts[2:], "/")
+				}
+			}
+
 			// Check cache
 			cached, ok := s.fileCache[normRel]
 			if ok && cached.modTime.Equal(fi.ModTime()) && cached.size == fi.Size() {
 				entries = append(entries, manifest.FileEntry{
-					Path:   normRel,
-					SHA256: cached.sha256,
-					Size:   cached.size,
+					Path:     normRel,
+					SHA256:   cached.sha256,
+					Size:     cached.size,
+					Feature:  feature,
+					DestPath: destPath,
 				})
 				return nil
 			}
@@ -115,9 +143,11 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 			}
 
 			entries = append(entries, manifest.FileEntry{
-				Path:   normRel,
-				SHA256: hash,
-				Size:   size,
+				Path:     normRel,
+				SHA256:   hash,
+				Size:     size,
+				Feature:  feature,
+				DestPath: destPath,
 			})
 			return nil
 		})
@@ -126,6 +156,10 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 			return nil, err
 		}
 	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Path < entries[j].Path
+	})
 
 	s.manifest = &manifest.Manifest{
 		Version:   1,
@@ -187,36 +221,42 @@ func (s *Server) Handler() http.Handler {
 		}
 
 		var totalBytes int64
-		var modCount, configCount, packCount int
+		var modCount, configCount, packCount, optionalCount int
 		for _, f := range m.Files {
 			totalBytes += f.Size
-			if strings.HasPrefix(f.Path, "mods/") {
+			if f.Feature != "" {
+				optionalCount++
+			}
+			target := f.ClientPath()
+			if strings.HasPrefix(target, "mods/") {
 				modCount++
-			} else if strings.HasPrefix(f.Path, "config/") {
+			} else if strings.HasPrefix(target, "config/") {
 				configCount++
-			} else if strings.HasPrefix(f.Path, "global_packs/") {
+			} else if strings.HasPrefix(target, "global_packs/") {
 				packCount++
 			}
 		}
 
 		data := struct {
-			FileCount   int
-			ModCount    int
-			ConfigCount int
-			PackCount   int
-			TotalMB     float64
-			LastScan    string
-			Files       []manifest.FileEntry
-			ServerPort  int
+			FileCount     int
+			ModCount      int
+			ConfigCount   int
+			PackCount     int
+			OptionalCount int
+			TotalMB       float64
+			LastScan      string
+			Files         []manifest.FileEntry
+			ServerPort    int
 		}{
-			FileCount:   len(m.Files),
-			ModCount:    modCount,
-			ConfigCount: configCount,
-			PackCount:   packCount,
-			TotalMB:     float64(totalBytes) / (1024 * 1024),
-			LastScan:    s.lastScanned.Format(time.RFC1123),
-			Files:       m.Files,
-			ServerPort:  s.opts.Port,
+			FileCount:     len(m.Files),
+			ModCount:      modCount,
+			ConfigCount:   configCount,
+			PackCount:     packCount,
+			OptionalCount: optionalCount,
+			TotalMB:       float64(totalBytes) / (1024 * 1024),
+			LastScan:      s.lastScanned.Format(time.RFC1123),
+			Files:         m.Files,
+			ServerPort:    s.opts.Port,
 		}
 
 		tmpl := `<!DOCTYPE html>
@@ -626,6 +666,10 @@ func (s *Server) Handler() http.Handler {
                 <div class="stat-title">Configs / Global Packs</div>
             </div>
             <div class="stat-card">
+                <div class="stat-num">{{.OptionalCount}}</div>
+                <div class="stat-title">Optional VR Files</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-num">{{printf "%.1f" .TotalMB}} MB</div>
                 <div class="stat-title">Repository Size</div>
             </div>
@@ -659,14 +703,14 @@ func (s *Server) Handler() http.Handler {
                     <span class="step-badge">2</span>
                     <div>
                         <strong>Run the Installer</strong>
-                        <p>Launch the installer and press <kbd>Enter</kbd> to accept your auto-detected <strong>Lunaris V.2</strong> instance. The installer automatically hooks the CurseForge Java runtime with zero manual configuration.</p>
+                        <p>Launch the installer and press <kbd>Enter</kbd> to accept your auto-detected <strong>Lunaris V.2</strong> instance. Playing in VR? Press <kbd>v</kbd> in the installer (or pass <code>--vr</code>) to enable Vivecraft. The installer automatically hooks CurseForge Java with zero manual configuration.</p>
                     </div>
                 </div>
                 <div class="step-item">
                     <span class="step-badge">3</span>
                     <div>
                         <strong>Click 'Play' in CurseForge</strong>
-                        <p>Click Play in CurseForge on <strong>Lunaris V.2</strong>. Lunaris will automatically sync all 484 files before starting Minecraft!</p>
+                        <p>Click Play in CurseForge on <strong>Lunaris V.2</strong>. Lunaris will automatically sync all files before starting Minecraft!</p>
                     </div>
                 </div>
             </div>
@@ -674,7 +718,7 @@ func (s *Server) Handler() http.Handler {
 
         <div class="table-controls">
             <h2>Tracked Files</h2>
-            <input type="text" id="modSearch" class="search-box" placeholder="Filter files (e.g. mods, config)..." onkeyup="filterMods()"/>
+            <input type="text" id="modSearch" class="search-box" placeholder="Filter files (e.g. mods, config, vr)..." onkeyup="filterMods()"/>
         </div>
 
         <div class="table-wrapper">
@@ -689,7 +733,10 @@ func (s *Server) Handler() http.Handler {
                 <tbody>
                     {{range .Files}}
                     <tr>
-                        <td><a href="/{{.Path}}">{{.Path}}</a></td>
+                        <td>
+                            <a href="/{{.Path}}">{{if .DestPath}}{{.DestPath}}{{else}}{{.Path}}{{end}}</a>
+                            {{if .Feature}}<span style="display:inline-block; font-size:0.75rem; padding: 2px 6px; border-radius: 4px; background: #282838; border: 1px solid #484860; color: #a5b4fc; margin-left: 8px; text-transform: uppercase;">Optional: {{.Feature}}</span>{{end}}
+                        </td>
                         <td>{{printf "%.1f" (div (toFloat .Size) 1024.0)}} KB</td>
                         <td class="hash-cell">{{printf "%.16s..." .SHA256}}</td>
                     </tr>

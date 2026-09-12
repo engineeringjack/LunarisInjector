@@ -111,3 +111,119 @@ func TestSyncerOfflineFallback(t *testing.T) {
 		t.Errorf("expected ErrOfflineProceed, got %v", err)
 	}
 }
+
+func TestSyncerOptionalVR(t *testing.T) {
+	coreContent := []byte("core mod 1.20.1")
+	h1 := sha256.Sum256(coreContent)
+	coreHash := hex.EncodeToString(h1[:])
+
+	vrContent := []byte("vivecraft 1.20.1 forge")
+	h2 := sha256.Sum256(vrContent)
+	vrHash := hex.EncodeToString(h2[:])
+
+	remoteManifest := &manifest.Manifest{
+		Version:   1,
+		Timestamp: 1234567,
+		Files: []manifest.FileEntry{
+			{
+				Path:   "mods/core.jar",
+				SHA256: coreHash,
+				Size:   int64(len(coreContent)),
+			},
+			{
+				Path:     "optional/vr/mods/vivecraft.jar",
+				SHA256:   vrHash,
+				Size:     int64(len(vrContent)),
+				Feature:  "vr",
+				DestPath: "mods/vivecraft.jar",
+			},
+		},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/manifest.json":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(remoteManifest)
+		case "/mods/core.jar":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(coreContent)
+		case "/optional/vr/mods/vivecraft.jar":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(vrContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	// Scenario 1: Non-VR player has vivecraft.jar present locally.
+	// With EnableVR = false and DeleteExtra = true, vivecraft.jar should be deleted and core.jar downloaded.
+	tmpGameDirNoVR := t.TempDir()
+	localModsNoVR := filepath.Join(tmpGameDirNoVR, "mods")
+	_ = os.MkdirAll(localModsNoVR, 0755)
+	localVRJar := filepath.Join(localModsNoVR, "vivecraft.jar")
+	_ = os.WriteFile(localVRJar, []byte("old vivecraft"), 0644)
+
+	cfgNoVR := config.DefaultConfig()
+	cfgNoVR.ServerURL = ts.URL
+	cfgNoVR.SyncDirs = []string{"mods"}
+	cfgNoVR.DeleteExtra = true
+	cfgNoVR.EnableVR = false
+
+	sNoVR := New(SyncOptions{
+		Config:      cfgNoVR,
+		GameDir:     tmpGameDirNoVR,
+		WorkerCount: 2,
+		Logger:      func(format string, args ...interface{}) {},
+	})
+
+	if err := sNoVR.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync (NoVR) failed: %v", err)
+	}
+
+	// Verify vivecraft.jar was removed for non-VR user
+	if _, err := os.Stat(localVRJar); !os.IsNotExist(err) {
+		t.Errorf("expected vivecraft.jar to be removed for non-VR client")
+	}
+	// Verify core.jar was installed
+	if _, err := os.Stat(filepath.Join(localModsNoVR, "core.jar")); err != nil {
+		t.Errorf("expected core.jar to be downloaded for non-VR client")
+	}
+
+	// Scenario 2: VR player has EnableVR = true.
+	// Both core.jar and vivecraft.jar should be downloaded into mods/.
+	tmpGameDirVR := t.TempDir()
+	localModsVR := filepath.Join(tmpGameDirVR, "mods")
+	_ = os.MkdirAll(localModsVR, 0755)
+
+	cfgVR := config.DefaultConfig()
+	cfgVR.ServerURL = ts.URL
+	cfgVR.SyncDirs = []string{"mods"}
+	cfgVR.DeleteExtra = true
+	cfgVR.EnableVR = true
+
+	sVR := New(SyncOptions{
+		Config:      cfgVR,
+		GameDir:     tmpGameDirVR,
+		WorkerCount: 2,
+		Logger:      func(format string, args ...interface{}) {},
+	})
+
+	if err := sVR.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync (VR) failed: %v", err)
+	}
+
+	// Verify both mods exist
+	if _, err := os.Stat(filepath.Join(localModsVR, "core.jar")); err != nil {
+		t.Errorf("expected core.jar to be downloaded for VR client")
+	}
+	downloadedVR, err := os.ReadFile(filepath.Join(localModsVR, "vivecraft.jar"))
+	if err != nil {
+		t.Fatalf("expected vivecraft.jar to be downloaded for VR client: %v", err)
+	}
+	if string(downloadedVR) != string(vrContent) {
+		t.Errorf("vivecraft content mismatch: got %q, want %q", string(downloadedVR), string(vrContent))
+	}
+}
+
