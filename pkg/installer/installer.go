@@ -494,12 +494,28 @@ func Install(opts InstallConfig) error {
 	}
 	lunarisBin, _ = filepath.Abs(lunarisBin)
 
+	// Copy lunaris binary into the instance directory for standalone self-contained execution
+	binName := filepath.Base(lunarisBin)
+	destBin := filepath.Join(opts.InstanceDir, binName)
+	if destBin != lunarisBin {
+		if data, err := os.ReadFile(lunarisBin); err == nil {
+			if err := os.WriteFile(destBin, data, 0755); err == nil {
+				lunarisBin = destBin
+			}
+		}
+	}
+
 	// Ensure mods/ folder exists in instance
 	_ = os.MkdirAll(filepath.Join(opts.InstanceDir, "mods"), 0755)
 
 	// 3. Write lunaris.json in instance directory
+	serverURL := opts.ServerURL
+	if serverURL == "" {
+		serverURL = config.DefaultServerURL
+	}
+
 	cfg := config.DefaultConfig()
-	cfg.ServerURL = opts.ServerURL
+	cfg.ServerURL = serverURL
 	cfg.GameVersion = reqVersion
 	cfg.RealJavaPath = realJava
 	cfg.SyncDirs = []string{"mods", "config", "global_packs"}

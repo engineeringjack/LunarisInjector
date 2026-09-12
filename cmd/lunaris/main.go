@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/slide/LunarisInjector/pkg/config"
 	"github.com/slide/LunarisInjector/pkg/injector"
@@ -155,15 +158,15 @@ func runInjector(args []string) {
 func cmdInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	instanceFlag := fs.String("instance", "", "Path to the Minecraft instance directory")
-	serverFlag := fs.String("server", "", "Sync server URL (e.g. http://192.168.1.100:8080)")
+	serverFlag := fs.String("server", config.DefaultServerURL, "Sync server URL (default: https://lunaris.csfrederick.com)")
 	versionFlag := fs.String("game-version", "1.20.1", "Required Minecraft version")
 	javaFlag := fs.String("java", "", "Path to the real Java binary (auto-detected if empty)")
 	profileFile := fs.String("profile-file", "", "Path to launcher_profiles.json (optional)")
 	profileID := fs.String("profile-id", "", "Profile ID in launcher_profiles.json (optional)")
 	_ = fs.Parse(args)
 
-	// Non-interactive mode
-	if *instanceFlag != "" && *serverFlag != "" {
+	// Non-interactive mode (when --instance is explicitly passed)
+	if *instanceFlag != "" {
 		err := installer.Install(installer.InstallConfig{
 			InstanceDir:         *instanceFlag,
 			ServerURL:           *serverFlag,
@@ -173,108 +176,179 @@ func cmdInstall(args []string) {
 			ProfileID:           *profileID,
 		})
 		if err != nil {
-			fmt.Printf("Installation failed: %v\n", err)
+			fmt.Printf("❌ Installation failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("✓ LunarisInjector successfully configured for:", *instanceFlag)
+		fmt.Printf("✔ LunarisInjector successfully configured for: %s\n", *instanceFlag)
+		fmt.Printf("  Sync Server URL: %s\n", *serverFlag)
 		return
 	}
 
 	// Interactive mode
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("=== LunarisInjector Auto-Installer ===")
-	fmt.Println("Target Version: Minecraft 1.20.1")
-	fmt.Println("Scanning for installed Minecraft modpacks & profiles...")
+
+	fmt.Println("╭─────────────────────────────────────────────────────────────╮")
+	fmt.Println("│                    ✦ LUNARIS INJECTOR ✦                     │")
+	fmt.Println("│           Automatic Modpack Synchronizer (1.20.1)           │")
+	fmt.Println("╰─────────────────────────────────────────────────────────────╯")
+	fmt.Println()
+	fmt.Println("Scanning for installed Minecraft instances & profiles...")
 
 	detected := installer.DetectInstances()
+
+	var compatible []installer.InstanceInfo
+	var incompatible []installer.InstanceInfo
+
+	for _, inst := range detected {
+		if inst.IsCompatible {
+			compatible = append(compatible, inst)
+		} else {
+			incompatible = append(incompatible, inst)
+		}
+	}
+
 	var selectedPath string
+	var selectedName string
 	var selectedProfileFile string
 	var selectedProfileID string
 
-	if len(detected) > 0 {
-		fmt.Println("\nDetected instances:")
-		for i, inst := range detected {
-			status := ""
+	if len(compatible) > 0 {
+		fmt.Println("\nDetected Minecraft 1.20.1 instance(s):")
+		for i, inst := range compatible {
+			recTag := ""
+			if i == 0 {
+				recTag = " ✦ Recommended"
+			}
+			status := "Ready to connect"
 			if inst.IsInjected {
-				status = fmt.Sprintf(" [ALREADY INJECTED: %s]", inst.ConfiguredServer)
+				status = fmt.Sprintf("Already hooked (%s)", inst.ConfiguredServer)
 			}
-			verStr := inst.GameVersion
-			if verStr == "" {
-				verStr = "Unknown"
-			}
-			compatStr := "❌ Incompatible (Requires 1.20.1)"
-			if inst.IsCompatible {
-				compatStr = "✓ COMPATIBLE (1.20.1)"
-			}
-			fmt.Printf(" [%d] [%s] %s (%s) [%s]%s\n     Path: %s\n", i+1, inst.Launcher, inst.Name, verStr, compatStr, status, inst.Path)
+			fmt.Printf("  [%d] %s (%s)%s\n", i+1, inst.Name, inst.Launcher, recTag)
+			fmt.Printf("      Path   : %s\n", inst.Path)
+			fmt.Printf("      Status : %s\n", status)
 		}
-		fmt.Printf(" [%d] Enter custom instance folder path\n", len(detected)+1)
+
+		if len(incompatible) > 0 {
+			fmt.Println("\nOther instances (incompatible with 1.20.1):")
+			for _, inst := range incompatible {
+				ver := inst.GameVersion
+				if ver == "" {
+					ver = "Unknown"
+				}
+				fmt.Printf("  [-] %s (%s, MC %s) [Requires 1.20.1]\n", inst.Name, inst.Launcher, ver)
+			}
+		}
+
+		customChoice := len(compatible) + 1
+		fmt.Printf("\n  [%d] Specify a custom folder path...\n", customChoice)
 
 		for {
-			fmt.Printf("\nSelect an instance [1-%d]: ", len(detected)+1)
+			fmt.Printf("\nSelect an instance [default: 1, or 'q' to quit]: ")
 			input, _ := reader.ReadString('\n')
 			input = strings.TrimSpace(input)
-			idx, err := strconv.Atoi(input)
-			if err == nil && idx >= 1 && idx <= len(detected) {
-				sel := detected[idx-1]
-				if !sel.IsCompatible {
-					fmt.Printf("\n❌ Error: Cannot install on '%s'!\n", sel.Name)
-					fmt.Printf("   This instance is on Minecraft '%s', but this modpack requires Minecraft 1.20.1.\n", sel.GameVersion)
-					fmt.Println("   Installation is not allowed on incompatible versions.")
-					continue
-				}
+
+			if input == "" || input == "1" {
+				sel := compatible[0]
 				selectedPath = sel.Path
+				selectedName = sel.Name
 				selectedProfileFile = sel.ProfileFile
 				selectedProfileID = sel.ProfileID
 				break
-			} else if err == nil && idx == len(detected)+1 {
+			}
+			if strings.EqualFold(input, "q") {
+				fmt.Println("Installation cancelled.")
+				return
+			}
+			idx, err := strconv.Atoi(input)
+			if err == nil && idx >= 1 && idx <= len(compatible) {
+				sel := compatible[idx-1]
+				selectedPath = sel.Path
+				selectedName = sel.Name
+				selectedProfileFile = sel.ProfileFile
+				selectedProfileID = sel.ProfileID
+				break
+			} else if err == nil && idx == customChoice {
 				break
 			}
-			fmt.Println("Invalid selection. Try again.")
+			fmt.Printf("Please enter a number between 1 and %d.\n", customChoice)
 		}
 	}
 
 	if selectedPath == "" {
 		for {
-			fmt.Print("\nEnter instance directory (where 'mods' folder lives): ")
+			fmt.Print("\nEnter instance directory path (where 'mods' folder is located): ")
 			input, _ := reader.ReadString('\n')
-			selectedPath = strings.TrimSpace(input)
-			if selectedPath == "" {
-				fmt.Println("No instance directory selected. Aborting.")
+			input = strings.TrimSpace(input)
+			if input == "" || strings.EqualFold(input, "q") {
+				fmt.Println("Installation cancelled.")
 				return
 			}
-			customVer := installer.DetectInstanceVersion(selectedPath)
+
+			customVer := installer.DetectInstanceVersion(input)
 			if customVer != "" && customVer != "1.20.1" {
-				fmt.Printf("\n❌ Error: The selected folder is on Minecraft %s, but this modpack requires Minecraft 1.20.1.\n", customVer)
-				fmt.Println("   Please select a valid 1.20.1 instance.")
+				fmt.Printf("\n❌ Error: Folder is for Minecraft %s, but this modpack requires 1.20.1.\n", customVer)
+				fmt.Println("   Please specify a 1.20.1 instance.")
 				continue
 			}
+			selectedPath = input
+			selectedName = filepath.Base(input)
 			break
 		}
 	}
 
-	// Server URL
-	defaultServer := "http://localhost:8080"
-	fmt.Printf("\nEnter Sync Server URL (default: %s): ", defaultServer)
-	serverInput, _ := reader.ReadString('\n')
-	serverInput = strings.TrimSpace(serverInput)
-	if serverInput == "" {
-		serverInput = defaultServer
-	}
+	// Auto-filled Server URL
+	serverInput := config.DefaultServerURL
 
-	// Real Java detection
+	// Auto-detected Java
 	detectedJava, _ := injector.FindRealJava("")
-	fmt.Printf("\nEnter Real Java path (press Enter for auto-detected: %s): ", detectedJava)
-	javaInput, _ := reader.ReadString('\n')
-	javaInput = strings.TrimSpace(javaInput)
-	if javaInput == "" {
-		javaInput = detectedJava
+	javaInput := detectedJava
+
+	// Display modern Setup Overview card
+	fmt.Println()
+	fmt.Println("╭── Installation Plan ────────────────────────────────────────╮")
+	fmt.Printf("│  Instance  : %-46s │\n", truncateStr(selectedName, 46))
+	fmt.Printf("│  Location  : %-46s │\n", truncateStr(selectedPath, 46))
+	fmt.Printf("│  Server    : %-46s │\n", truncateStr(serverInput, 46))
+	javaDisplay := javaInput
+	if javaDisplay == "" {
+		javaDisplay = "java (system default)"
+	}
+	fmt.Printf("│  Java 17   : %-46s │\n", truncateStr(javaDisplay, 46))
+	fmt.Println("│  Sync Dirs : mods, config, global_packs                     │")
+	fmt.Println("╰─────────────────────────────────────────────────────────────╯")
+
+	for {
+		fmt.Print("\nReady to install! Press [Enter] to proceed (or 'c' to customize, 'q' to quit): ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		if input == "" || strings.EqualFold(input, "y") || strings.EqualFold(input, "yes") {
+			break
+		} else if strings.EqualFold(input, "c") {
+			fmt.Printf("\nSync Server URL [default: %s]: ", serverInput)
+			srvIn, _ := reader.ReadString('\n')
+			srvIn = strings.TrimSpace(srvIn)
+			if srvIn != "" {
+				serverInput = srvIn
+			}
+
+			fmt.Printf("Java Runtime Path [default: %s]: ", javaInput)
+			jIn, _ := reader.ReadString('\n')
+			jIn = strings.TrimSpace(jIn)
+			if jIn != "" {
+				javaInput = jIn
+			}
+			break
+		} else if strings.EqualFold(input, "q") {
+			fmt.Println("Installation cancelled.")
+			return
+		}
 	}
 
 	selfExe, _ := os.Executable()
 	selfExe, _ = filepath.Abs(selfExe)
 
-	fmt.Println("\nInstalling LunarisInjector...")
+	fmt.Println("\nConfiguring LunarisInjector...")
 	err := installer.Install(installer.InstallConfig{
 		InstanceDir:   selectedPath,
 		ServerURL:     serverInput,
@@ -285,23 +359,61 @@ func cmdInstall(args []string) {
 	})
 
 	if err != nil {
-		fmt.Printf("Installation error: %v\n", err)
+		fmt.Printf("\n❌ Installation error: %v\n", err)
 		return
 	}
 
-	fmt.Println("\n=======================================================")
-	fmt.Println("✓ Installation Complete!")
-	fmt.Println("=======================================================")
-	fmt.Printf("Instance Directory : %s\n", selectedPath)
-	fmt.Printf("Sync Server URL    : %s\n", serverInput)
-	fmt.Printf("Config File        : %s/lunaris.json\n", selectedPath)
-	fmt.Printf("Injector Executable: %s\n", selfExe)
-	fmt.Println("\nHow it works:")
-	fmt.Println("1. Whenever Minecraft is launched for this instance, LunarisInjector")
-	fmt.Println("   runs first, synchronizes mods from the server, and launches Minecraft.")
-	fmt.Println("2. In CurseForge, ensure the profile's 'Java Executable' or the launcher's")
-	fmt.Printf("   javaDir is pointed to: %s\n", selfExe)
-	fmt.Println("=======================================================")
+	// Determine installed wrapper path (copied to instance directory or selfExe)
+	wrapperPath := filepath.Join(selectedPath, filepath.Base(selfExe))
+	if _, err := os.Stat(wrapperPath); err != nil {
+		wrapperPath = selfExe
+	}
+
+	// Quick connectivity check
+	fmt.Println("Testing server connection...")
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get(strings.TrimRight(serverInput, "/") + "/manifest.json")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		var m manifest.Manifest
+		if json.NewDecoder(resp.Body).Decode(&m) == nil {
+			fmt.Printf("✔ Connected to sync server (%d files ready to sync)\n", len(m.Files))
+		} else {
+			fmt.Println("✔ Connected to sync server")
+		}
+		resp.Body.Close()
+	} else {
+		fmt.Println("ℹ Sync server offline or unreachable. Offline launch mode is enabled.")
+	}
+
+	fmt.Println()
+	fmt.Println("╭─────────────────────────────────────────────────────────────╮")
+	fmt.Println("│                ✔ INSTALLATION COMPLETE!                     │")
+	fmt.Println("╰─────────────────────────────────────────────────────────────╯")
+	fmt.Println()
+	fmt.Println("LunarisInjector is now configured for your modpack!")
+	fmt.Printf("  ▸ Modpack Instance : %s\n", selectedName)
+	fmt.Printf("  ▸ Wrapper Binary   : %s\n", wrapperPath)
+	fmt.Printf("  ▸ Remote Server    : %s\n", serverInput)
+	fmt.Println()
+	fmt.Println("Next step in CurseForge:")
+	fmt.Printf("  1. In CurseForge, right-click '%s' → select 'Profile Options'.\n", selectedName)
+	fmt.Println("  2. Check 'Java Settings' or 'Custom Java Executable'.")
+	fmt.Println("  3. Set the executable path to:")
+	fmt.Printf("     %s\n", wrapperPath)
+	fmt.Println()
+	fmt.Println("Every time you hit PLAY in CurseForge, Lunaris will automatically")
+	fmt.Println("sync mods, configs, and global packs before Minecraft starts!")
+	fmt.Println("===============================================================")
+}
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return "..." + s[len(s)-(maxLen-3):]
 }
 
 func cmdUninstall(args []string) {
@@ -527,22 +639,22 @@ COMMANDS:
   uninstall     Revert an instance back to normal
   server        Run a built-in sync server with live manifest & file downloads
   generate      Generate a static manifest.json from a folder (for Nginx, S3, etc.)
-  verify        Check an instance's mods against the server without launching
+  verify        Check an instance's files against the server without launching
   instances     List all detected CurseForge, Vanilla, and Prism instances
   run           Manually test the injector wrapper on a game directory
   version       Print version information
 
+DEFAULT SERVER:
+  https://lunaris.csfrederick.com
+
 EXAMPLES:
-  # 1. Run the interactive installer
+  # 1. Run the modern interactive installer (1-click setup)
   lunaris install
 
-  # 2. Host a sync server for your friends/players from your modpack folder
+  # 2. Host a sync server for players from your modpack folder
   lunaris server --dir ./my-modpack --port 8080
 
-  # 3. Generate static manifest for hosting on Nginx or GitHub / S3
-  lunaris generate --dir ./my-modpack
-
-  # 4. Check instance sync status
+  # 3. Check instance sync status
   lunaris verify --instance ~/.minecraft
 
 `, Version)

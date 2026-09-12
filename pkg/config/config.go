@@ -8,10 +8,11 @@ import (
 )
 
 const ConfigFileName = "lunaris.json"
+const DefaultServerURL = "https://lunaris.csfrederick.com"
 
 // Config contains the configuration settings for LunarisInjector.
 type Config struct {
-	// ServerURL is the HTTP/HTTPS endpoint of the sync server (e.g. "http://myserver.com:8080").
+	// ServerURL is the HTTP/HTTPS endpoint of the sync server (e.g. "https://lunaris.csfrederick.com").
 	ServerURL string `json:"server_url"`
 
 	// GameVersion is the required Minecraft version (e.g. "1.20.1").
@@ -20,7 +21,7 @@ type Config struct {
 	// RealJavaPath is the absolute path to the actual Java executable (java or javaw.exe).
 	RealJavaPath string `json:"real_java_path"`
 
-	// SyncDirs are relative directories to synchronize (e.g. ["mods", "config"]).
+	// SyncDirs are relative directories to synchronize (e.g. ["mods", "config", "global_packs"]).
 	SyncDirs []string `json:"sync_dirs"`
 
 	// DeleteExtra determines whether local files not present in the remote manifest are deleted.
@@ -42,7 +43,7 @@ var DefaultSyncDirs = []string{"mods", "config", "global_packs"}
 // DefaultConfig returns the standard default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		ServerURL:     "http://localhost:8080",
+		ServerURL:     DefaultServerURL,
 		GameVersion:   "1.20.1",
 		RealJavaPath:  "",
 		SyncDirs:      []string{"mods", "config", "global_packs"},
