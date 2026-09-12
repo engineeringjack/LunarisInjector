@@ -837,6 +837,7 @@ func cmdGUI(args []string) {
 
 	if err := srv.Start(); err != nil {
 		fmt.Printf("GUI error: %v\n", err)
+		gui.ShowNativeAlert("Lunaris Installer", fmt.Sprintf("Failed to launch GUI installer:\n%v", err))
 		os.Exit(1)
 	}
 }

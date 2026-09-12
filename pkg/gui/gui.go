@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +34,7 @@ type Server struct {
 	listener     net.Listener
 	httpServer   *http.Server
 	mu           sync.Mutex
+	hasConnected bool
 	lastPing     time.Time
 	shutdownOnce sync.Once
 	shutdownChan chan struct{}
@@ -251,7 +250,14 @@ func (s *Server) Handler() http.Handler {
 		}()
 	})
 
-	return mux
+	// Wrap mux so any incoming HTTP request flags that the client has connected
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.hasConnected = true
+		s.lastPing = time.Now()
+		s.mu.Unlock()
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // Start launches the GUI HTTP server and opens the application window.
@@ -277,33 +283,57 @@ func (s *Server) Start() error {
 		Handler: s.Handler(),
 	}
 
-	// Launch web app window in background
+	// Launch web app window in background with fail-safe watchdog
 	if s.opts.OpenBrowser {
 		go func() {
 			time.Sleep(150 * time.Millisecond)
 			if err := OpenBrowser(url); err != nil {
-				s.opts.Logger("[Lunaris GUI] Could not auto-launch browser window: %v", err)
-				s.opts.Logger("[Lunaris GUI] Please open %s manually.", url)
+				s.opts.Logger("[Lunaris GUI] App window launch returned error: %v; opening default browser...", err)
+				_ = OpenDefaultBrowser(url)
+			}
+
+			// Watchdog: after 2 seconds, if no browser has connected, launch default browser fallback!
+			time.Sleep(2 * time.Second)
+			s.mu.Lock()
+			connected := s.hasConnected
+			s.mu.Unlock()
+
+			if !connected {
+				s.opts.Logger("[Lunaris GUI] App window did not connect within 2s; launching default browser fallback...")
+				_ = OpenDefaultBrowser(url)
 			}
 		}()
 	}
 
-	// Auto-shutdown monitor: if no browser opened or kept alive within 30 seconds
+	// Auto-shutdown monitor:
+	// - Once connected, if all windows close (no ping for 20s), cleanly shut down.
+	// - If never connected, wait at least 60 seconds before timing out.
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
+		startTime := time.Now()
 		for {
 			select {
 			case <-s.shutdownChan:
 				return
 			case <-ticker.C:
 				s.mu.Lock()
+				connected := s.hasConnected
 				elapsed := time.Since(s.lastPing)
 				s.mu.Unlock()
-				if elapsed > 30*time.Second {
-					s.opts.Logger("[Lunaris GUI] Inactive window detected. Closing installer.")
-					s.Stop()
-					return
+
+				if connected {
+					if elapsed > 20*time.Second {
+						s.opts.Logger("[Lunaris GUI] Browser window closed. Shutting down installer.")
+						s.Stop()
+						return
+					}
+				} else {
+					if time.Since(startTime) > 60*time.Second {
+						s.opts.Logger("[Lunaris GUI] No browser connection detected after 60s. Closing installer.")
+						s.Stop()
+						return
+					}
 				}
 			}
 		}
@@ -326,55 +356,6 @@ func (s *Server) Stop() {
 			_ = s.httpServer.Shutdown(ctx)
 		}
 	})
-}
-
-// OpenBrowser opens the given URL in an application window (Edge/Chrome app mode)
-// or the user's default browser.
-func OpenBrowser(targetURL string) error {
-	switch runtime.GOOS {
-	case "windows":
-		// Microsoft Edge (Standard on all modern Windows versions)
-		edgeCandidates := []string{
-			filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft", "Edge", "Application", "msedge.exe"),
-			filepath.Join(os.Getenv("ProgramFiles"), "Microsoft", "Edge", "Application", "msedge.exe"),
-			filepath.Join(os.Getenv("LocalAppData"), "Microsoft", "Edge", "Application", "msedge.exe"),
-		}
-		for _, p := range edgeCandidates {
-			if _, err := os.Stat(p); err == nil {
-				return exec.Command(p, "--app="+targetURL, "--window-size=920,840").Start()
-			}
-		}
-
-		// Google Chrome
-		chromeCandidates := []string{
-			filepath.Join(os.Getenv("ProgramFiles"), "Google", "Chrome", "Application", "chrome.exe"),
-			filepath.Join(os.Getenv("ProgramFiles(x86)"), "Google", "Chrome", "Application", "chrome.exe"),
-			filepath.Join(os.Getenv("LocalAppData"), "Google", "Chrome", "Application", "chrome.exe"),
-		}
-		for _, p := range chromeCandidates {
-			if _, err := os.Stat(p); err == nil {
-				return exec.Command(p, "--app="+targetURL, "--window-size=920,840").Start()
-			}
-		}
-
-		// System default fallback
-		return exec.Command("cmd", "/c", "start", targetURL).Start()
-
-	case "darwin":
-		chromePath := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-		if _, err := os.Stat(chromePath); err == nil {
-			return exec.Command(chromePath, "--app="+targetURL, "--window-size=920,840").Start()
-		}
-		return exec.Command("open", targetURL).Start()
-
-	default: // Linux
-		for _, browser := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser"} {
-			if p, err := exec.LookPath(browser); err == nil {
-				return exec.Command(p, "--app="+targetURL, "--window-size=920,840").Start()
-			}
-		}
-		return exec.Command("xdg-open", targetURL).Start()
-	}
 }
 
 // IndexHTML is the single-page application matching the visual design of csfrederick.com / lunaris.csfrederick.com.
