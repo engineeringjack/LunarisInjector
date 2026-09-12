@@ -125,3 +125,105 @@ func TestInstallVersionMismatch(t *testing.T) {
 	}
 }
 
+func TestHookAndUnhookCurseForgeJava(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "Install", "java", "java-runtime-gamma", "bin")
+	_ = os.MkdirAll(binDir, 0755)
+
+	targetName := "java"
+	realName := "java.real"
+	if os.PathSeparator == '\\' {
+		targetName = "javaw.exe"
+		realName = "javaw.real.exe"
+	}
+
+	origJavaContent := "original-openjdk-binary"
+	targetPath := filepath.Join(binDir, targetName)
+	_ = os.WriteFile(targetPath, []byte(origJavaContent), 0755)
+
+	lunarisContent := "lunaris-injector-binary"
+	lunarisBin := filepath.Join(tmpDir, "lunaris")
+	_ = os.WriteFile(lunarisBin, []byte(lunarisContent), 0755)
+
+	inst1 := filepath.Join(tmpDir, "Instances", "Lunaris V.2")
+
+	// 1. Hook
+	hooked, err := HookCurseForgeJava(binDir, lunarisBin, inst1)
+	if err != nil {
+		t.Fatalf("HookCurseForgeJava failed: %v", err)
+	}
+	if !hooked {
+		t.Fatalf("expected hooked to be true")
+	}
+
+	if !IsCurseForgeJavaHooked(binDir) {
+		t.Errorf("expected IsCurseForgeJavaHooked to be true")
+	}
+
+	// Verify java.real has original content
+	realPath := filepath.Join(binDir, realName)
+	realData, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", realPath, err)
+	}
+	if string(realData) != origJavaContent {
+		t.Errorf("expected real content %q, got %q", origJavaContent, string(realData))
+	}
+
+	// Verify target binary has lunaris content
+	targetData, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", targetPath, err)
+	}
+	if string(targetData) != lunarisContent {
+		t.Errorf("expected target content %q, got %q", lunarisContent, string(targetData))
+	}
+
+	// 2. Add second instance
+	inst2 := filepath.Join(tmpDir, "Instances", "Second Instance")
+	_ = os.MkdirAll(inst2, 0755)
+	_ = os.WriteFile(filepath.Join(inst2, config.ConfigFileName), []byte("{}"), 0644)
+	_, err = HookCurseForgeJava(binDir, lunarisBin, inst2)
+	if err != nil {
+		t.Fatalf("second hook failed: %v", err)
+	}
+
+	// Unhook first instance -> should preserve hook because inst2 remains
+	unhooked, err := UnhookCurseForgeJava(binDir, inst1)
+	if err != nil {
+		t.Fatalf("UnhookCurseForgeJava inst1 failed: %v", err)
+	}
+	if unhooked {
+		t.Errorf("expected unhooked=false because inst2 remains")
+	}
+	if !IsCurseForgeJavaHooked(binDir) {
+		t.Errorf("expected still hooked after inst1 unhook")
+	}
+
+	// Unhook second instance -> now should fully restore
+	unhooked, err = UnhookCurseForgeJava(binDir, inst2)
+	if err != nil {
+		t.Fatalf("UnhookCurseForgeJava inst2 failed: %v", err)
+	}
+	if !unhooked {
+		t.Errorf("expected unhooked=true when all instances removed")
+	}
+	if IsCurseForgeJavaHooked(binDir) {
+		t.Errorf("expected not hooked after inst2 unhook")
+	}
+
+	// Verify restored target has original content
+	restoredData, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read restored %s: %v", targetPath, err)
+	}
+	if string(restoredData) != origJavaContent {
+		t.Errorf("expected restored content %q, got %q", origJavaContent, string(restoredData))
+	}
+
+	// Verify .real is deleted
+	if _, err := os.Stat(realPath); !os.IsNotExist(err) {
+		t.Errorf("expected %s to be deleted after unhook", realPath)
+	}
+}
+

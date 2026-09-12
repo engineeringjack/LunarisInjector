@@ -26,21 +26,85 @@ const Version = "1.0.0"
 func main() {
 	args := os.Args[1:]
 
-	// If invoked with Minecraft / Java launch arguments, run the injector directly
-	if isJavaInvocation(args) {
-		runInjector(args)
+	siblingRealJava := injector.GetSiblingRealJava()
+
+	// If running as a hooked Java wrapper (sibling *.real exists in the same directory):
+	if siblingRealJava != "" {
+		// 1. If explicit administrative CLI command was passed (e.g. `java install`, `java uninstall`):
+		if len(args) > 0 && isAdministrativeCommand(args[0]) {
+			handleAdminCommand(args)
+			return
+		}
+
+		// 2. Check if this is a Minecraft launch targeting a Lunaris instance:
+		if isMinecraftLaunch(args) {
+			gameDir := injector.ExtractGameDir(args)
+			if gameDir != "" && config.IsLunarisInstance(gameDir) {
+				// Target instance is a Lunaris instance! Run sync then launch real Java:
+				runInjector(args, siblingRealJava)
+				return
+			}
+		}
+
+		// 3. For any other call (e.g. `java -version`, other non-Lunaris modpack launch, other tools):
+		// Transparently and silently pass through directly to real Java!
+		exitCode, err := injector.ExecOrRunJava(siblingRealJava, args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to execute Java runtime: %v\n", err)
+		}
+		os.Exit(exitCode)
 		return
 	}
 
-	// Otherwise, handle CLI subcommands
+	// Standalone CLI invocation:
+	if isMinecraftLaunch(args) || isJavaInvocation(args) {
+		runInjector(args, "")
+		return
+	}
+
 	if len(args) == 0 {
 		printUsage()
 		return
 	}
 
+	handleAdminCommand(args)
+}
+
+// isAdministrativeCommand checks if the first argument is a Lunaris CLI subcommand.
+func isAdministrativeCommand(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case "install", "uninstall", "server", "serve", "generate", "gen", "verify", "check", "instances", "list":
+		return true
+	default:
+		return false
+	}
+}
+
+// isMinecraftLaunch detects if arguments correspond to a Minecraft client launch.
+func isMinecraftLaunch(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--gameDir" || strings.HasPrefix(arg, "--gameDir=") {
+			return true
+		}
+		if strings.HasPrefix(arg, "-Dminecraft.applet.TargetDirectory=") {
+			return true
+		}
+		if strings.Contains(arg, "net.minecraft.") ||
+			strings.Contains(arg, "cpw.mods.bootstraplauncher.") ||
+			strings.Contains(arg, "net.minecraftforge.") ||
+			strings.Contains(arg, "fabricmc") ||
+			strings.Contains(arg, "quiltmc") {
+			return true
+		}
+	}
+	return false
+}
+
+func handleAdminCommand(args []string) {
 	switch args[0] {
 	case "run", "inject":
-		runInjector(args[1:])
+		runInjector(args[1:], "")
 	case "install":
 		cmdInstall(args[1:])
 	case "uninstall":
@@ -84,7 +148,7 @@ func isJavaInvocation(args []string) bool {
 }
 
 // runInjector intercepts the launch, synchronizes mods, then executes real Java.
-func runInjector(args []string) {
+func runInjector(args []string, siblingRealJava string) {
 	fmt.Println("==================================================")
 	fmt.Printf(" [LunarisInjector v%s] Pre-launch Synchronizer\n", Version)
 	fmt.Println("==================================================")
@@ -134,21 +198,25 @@ func runInjector(args []string) {
 	}
 
 	// Locate real Java
-	configuredJava := ""
-	if cfg != nil {
-		configuredJava = cfg.RealJavaPath
-	}
+	realJava := siblingRealJava
+	if realJava == "" {
+		configuredJava := ""
+		if cfg != nil {
+			configuredJava = cfg.RealJavaPath
+		}
 
-	realJava, err := injector.FindRealJava(configuredJava)
-	if err != nil {
-		fmt.Printf("[Lunaris] FATAL ERROR: %v\n", err)
-		os.Exit(1)
+		detectedJava, err := injector.FindRealJava(configuredJava)
+		if err != nil {
+			fmt.Printf("[Lunaris] FATAL ERROR: %v\n", err)
+			os.Exit(1)
+		}
+		realJava = detectedJava
 	}
 
 	fmt.Printf("[Lunaris] Launching Minecraft via: %s\n", realJava)
 	fmt.Println("==================================================")
 
-	exitCode, err := injector.RunJava(realJava, args)
+	exitCode, err := injector.ExecOrRunJava(realJava, args)
 	if err != nil {
 		fmt.Printf("[Lunaris] Error running Java: %v\n", err)
 	}
@@ -181,6 +249,13 @@ func cmdInstall(args []string) {
 		}
 		fmt.Printf("✔ LunarisInjector successfully configured for: %s\n", *instanceFlag)
 		fmt.Printf("  Sync Server URL: %s\n", *serverFlag)
+		runtimes := installer.FindCurseForgeJavaRuntimeDirs(*instanceFlag)
+		for _, r := range runtimes {
+			if installer.IsCurseForgeJavaHooked(r) {
+				fmt.Printf("  ✔ CurseForge Java runtime hooked: %s\n", r)
+			}
+		}
+		fmt.Println("  Ready to play! Simply click 'Play' in CurseForge.")
 		return
 	}
 
@@ -390,19 +465,23 @@ func cmdInstall(args []string) {
 	fmt.Println("│                ✔ INSTALLATION COMPLETE!                     │")
 	fmt.Println("╰─────────────────────────────────────────────────────────────╯")
 	fmt.Println()
-	fmt.Println("LunarisInjector is now configured for your modpack!")
+	fmt.Println("LunarisInjector is now seamlessly configured for your modpack!")
 	fmt.Printf("  ▸ Modpack Instance : %s\n", selectedName)
-	fmt.Printf("  ▸ Wrapper Binary   : %s\n", wrapperPath)
+	fmt.Printf("  ▸ Instance Folder  : %s\n", selectedPath)
 	fmt.Printf("  ▸ Remote Server    : %s\n", serverInput)
+	fmt.Println("  ▸ Sync Directories : mods, config, global_packs")
+
+	runtimes := installer.FindCurseForgeJavaRuntimeDirs(selectedPath)
+	for _, r := range runtimes {
+		if installer.IsCurseForgeJavaHooked(r) {
+			fmt.Printf("  ▸ CurseForge Java  : %s (Hooked)\n", filepath.Join(r, "java"))
+		}
+	}
 	fmt.Println()
-	fmt.Println("Next step in CurseForge:")
-	fmt.Printf("  1. In CurseForge, right-click '%s' → select 'Profile Options'.\n", selectedName)
-	fmt.Println("  2. Check 'Java Settings' or 'Custom Java Executable'.")
-	fmt.Println("  3. Set the executable path to:")
-	fmt.Printf("     %s\n", wrapperPath)
-	fmt.Println()
-	fmt.Println("Every time you hit PLAY in CurseForge, Lunaris will automatically")
-	fmt.Println("sync mods, configs, and global packs before Minecraft starts!")
+	fmt.Println("Ready to play:")
+	fmt.Printf("  Simply open CurseForge and click 'PLAY' on %s!\n", selectedName)
+	fmt.Println("  Lunaris will automatically synchronize your mods, configs, and global packs")
+	fmt.Println("  from https://lunaris.csfrederick.com before starting Minecraft.")
 	fmt.Println("===============================================================")
 }
 
@@ -423,10 +502,35 @@ func cmdUninstall(args []string) {
 
 	target := *instanceFlag
 	if target == "" {
+		detected := installer.DetectInstances()
+		var installed []installer.InstanceInfo
+		for _, inst := range detected {
+			if inst.IsInjected {
+				installed = append(installed, inst)
+			}
+		}
+
 		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("Enter instance directory to uninstall Lunaris from: ")
-		input, _ := reader.ReadString('\n')
-		target = strings.TrimSpace(input)
+		if len(installed) > 0 {
+			fmt.Println("Configured Lunaris instances:")
+			for i, inst := range installed {
+				fmt.Printf("  [%d] %s (%s)\n", i+1, inst.Name, inst.Path)
+			}
+			fmt.Printf("\nSelect an instance to uninstall [default: 1, or enter path]: ")
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+			if input == "" || input == "1" {
+				target = installed[0].Path
+			} else if idx, err := strconv.Atoi(input); err == nil && idx >= 1 && idx <= len(installed) {
+				target = installed[idx-1].Path
+			} else {
+				target = input
+			}
+		} else {
+			fmt.Print("Enter instance directory to uninstall Lunaris from: ")
+			input, _ := reader.ReadString('\n')
+			target = strings.TrimSpace(input)
+		}
 	}
 
 	if target == "" {
@@ -436,10 +540,17 @@ func cmdUninstall(args []string) {
 
 	err := installer.Uninstall(target, "", "")
 	if err != nil {
-		fmt.Printf("Uninstall error: %v\n", err)
+		fmt.Printf("❌ Uninstall error: %v\n", err)
 		return
 	}
-	fmt.Println("✓ LunarisInjector uninstalled from:", target)
+	fmt.Println("✔ LunarisInjector successfully uninstalled from:", target)
+
+	runtimes := installer.FindCurseForgeJavaRuntimeDirs(target)
+	for _, r := range runtimes {
+		if !installer.IsCurseForgeJavaHooked(r) {
+			fmt.Printf("✔ Restored stock CurseForge Java runtime at: %s\n", r)
+		}
+	}
 }
 
 func cmdServer(args []string) {

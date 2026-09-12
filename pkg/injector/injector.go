@@ -89,8 +89,93 @@ func ExtractGameVersion(args []string, gameDir string) string {
 	return ""
 }
 
-// IsSelfExecutable checks if the given path points to the currently running LunarisInjector binary.
+// GetSiblingRealJava checks whether a sibling real Java binary exists next to the current executable.
+// This indicates the current binary was installed as a Java runtime wrapper.
+func GetSiblingRealJava() string {
+	selfPath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(selfPath)
+	base := filepath.Base(selfPath)
+
+	var candidates []string
+	if runtime.GOOS == "windows" {
+		noExt := strings.TrimSuffix(base, filepath.Ext(base))
+		lower := strings.ToLower(base)
+		if strings.HasPrefix(lower, "javaw") {
+			candidates = append(candidates,
+				filepath.Join(dir, "javaw.real.exe"),
+				filepath.Join(dir, noExt+".real.exe"),
+				filepath.Join(dir, "java.real.exe"),
+				filepath.Join(dir, "javaw.real"),
+			)
+		} else {
+			candidates = append(candidates,
+				filepath.Join(dir, "java.real.exe"),
+				filepath.Join(dir, noExt+".real.exe"),
+				filepath.Join(dir, "javaw.real.exe"),
+				filepath.Join(dir, "java.real"),
+			)
+		}
+	} else {
+		candidates = append(candidates,
+			filepath.Join(dir, base+".real"),
+			filepath.Join(dir, "java.real"),
+		)
+	}
+
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand
+		}
+	}
+	return ""
+}
+
+// ResolveRealBinary checks if a binary path has a corresponding '.real' sibling.
+// If so (e.g. java -> java.real), it returns the real binary path.
+func ResolveRealBinary(path string) string {
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	dir := filepath.Dir(clean)
+	base := filepath.Base(clean)
+
+	if runtime.GOOS == "windows" {
+		noExt := strings.TrimSuffix(base, filepath.Ext(base))
+		cand := filepath.Join(dir, noExt+".real.exe")
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand
+		}
+		cand = filepath.Join(dir, noExt+".real")
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand
+		}
+	} else {
+		cand := filepath.Join(dir, base+".real")
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand
+		}
+	}
+
+	return clean
+}
+
+// HasSiblingRealJava checks whether a candidate path has a sibling '.real' file (meaning candidate is a wrapper).
+func HasSiblingRealJava(candidatePath string) bool {
+	realPath := ResolveRealBinary(candidatePath)
+	return realPath != filepath.Clean(candidatePath)
+}
+
+// IsSelfExecutable checks if the given path points to the currently running LunarisInjector binary,
+// or if the path is a wrapper that has a sibling real Java binary.
 func IsSelfExecutable(candidatePath string) bool {
+	if HasSiblingRealJava(candidatePath) {
+		return true
+	}
+
 	selfPath, err := os.Executable()
 	if err != nil {
 		return false
@@ -107,12 +192,17 @@ func IsSelfExecutable(candidatePath string) bool {
 
 // FindRealJava attempts to locate the real Java runtime on the system.
 func FindRealJava(configuredPath string) (string, error) {
+	// 0. Sibling real Java (when running as hooked wrapper)
+	if sibling := GetSiblingRealJava(); sibling != "" {
+		return sibling, nil
+	}
+
 	// 1. If configured in lunaris.json and valid
 	if configuredPath != "" {
-		clean := filepath.Clean(configuredPath)
-		if _, err := os.Stat(clean); err == nil {
-			if !IsSelfExecutable(clean) {
-				return clean, nil
+		resolved := ResolveRealBinary(configuredPath)
+		if fi, err := os.Stat(resolved); err == nil && !fi.IsDir() {
+			if !IsSelfExecutable(resolved) {
+				return resolved, nil
 			}
 		}
 	}
@@ -123,6 +213,10 @@ func FindRealJava(configuredPath string) (string, error) {
 
 	if runtime.GOOS == "windows" {
 		searchPatterns = []string{
+			filepath.Join(homeDir, "AppData", "Local", "Packages", "*", "LocalCache", "Local", "runtime", "java-runtime-gamma", "*", "bin", "javaw.exe"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "javaw.exe"),
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "javaw.exe"),
+			`C:\curseforge\minecraft\Install\java\java-runtime-gamma\bin\javaw.exe`,
 			filepath.Join(homeDir, "AppData", "Local", "Packages", "*", "LocalCache", "Local", "runtime", "*", "*", "bin", "javaw.exe"),
 			filepath.Join(homeDir, "AppData", "Local", "Packages", "*", "LocalCache", "Local", "runtime", "*", "*", "bin", "java.exe"),
 			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "javaw.exe"),
@@ -136,6 +230,8 @@ func FindRealJava(configuredPath string) (string, error) {
 		}
 	} else if runtime.GOOS == "darwin" {
 		searchPatterns = []string{
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
 			filepath.Join(homeDir, "Library", "Application Support", "minecraft", "runtime", "*", "*", "bin", "java"),
 			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
 			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
@@ -144,11 +240,16 @@ func FindRealJava(configuredPath string) (string, error) {
 	} else {
 		// Linux
 		searchPatterns = []string{
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
+			filepath.Join(homeDir, ".var", "app", "com.curseforge.CurseForge", "data", "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
 			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
 			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
 			filepath.Join(homeDir, ".var", "app", "com.curseforge.CurseForge", "data", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
+			filepath.Join(homeDir, ".minecraft", "runtime", "java-runtime-gamma", "*", "bin", "java"),
 			filepath.Join(homeDir, ".minecraft", "runtime", "*", "*", "bin", "java"),
 			filepath.Join(homeDir, ".minecraft", "runtime", "*", "*", "*", "bin", "java"),
+			"/usr/lib/jvm/java-17-*/bin/java",
 			"/usr/lib/jvm/*/bin/java",
 			"/usr/bin/java",
 		}
@@ -158,8 +259,9 @@ func FindRealJava(configuredPath string) (string, error) {
 		matches, err := filepath.Glob(pattern)
 		if err == nil {
 			for _, match := range matches {
-				if _, err := os.Stat(match); err == nil && !IsSelfExecutable(match) {
-					return match, nil
+				resolved := ResolveRealBinary(match)
+				if _, err := os.Stat(resolved); err == nil && !IsSelfExecutable(resolved) {
+					return resolved, nil
 				}
 			}
 		}
@@ -171,7 +273,7 @@ func FindRealJava(configuredPath string) (string, error) {
 		if runtime.GOOS == "windows" {
 			binName = "javaw.exe"
 		}
-		candidate := filepath.Join(javaHome, "bin", binName)
+		candidate := ResolveRealBinary(filepath.Join(javaHome, "bin", binName))
 		if _, err := os.Stat(candidate); err == nil && !IsSelfExecutable(candidate) {
 			return candidate, nil
 		}
@@ -185,8 +287,9 @@ func FindRealJava(configuredPath string) (string, error) {
 
 	for _, bin := range binaries {
 		if path, err := exec.LookPath(bin); err == nil {
-			if !IsSelfExecutable(path) {
-				return path, nil
+			resolved := ResolveRealBinary(path)
+			if !IsSelfExecutable(resolved) {
+				return resolved, nil
 			}
 		}
 	}

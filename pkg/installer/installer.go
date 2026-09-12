@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/slide/LunarisInjector/pkg/config"
 	"github.com/slide/LunarisInjector/pkg/injector"
@@ -441,13 +443,14 @@ func DetectInstanceVersion(instanceDir string) string {
 
 // InstallConfig contains options for setting up Lunaris on an instance.
 type InstallConfig struct {
-	InstanceDir       string // Directory of the instance (where mods/ folder is)
-	ServerURL         string // Sync server URL
-	RealJavaPath      string // Path to real Java (auto-detected if empty)
-	LunarisBinary     string // Path to lunaris binary (auto-detected if empty)
-	ProfileFile       string // Optional launcher_profiles.json to patch
-	ProfileID         string // Optional profile ID to patch
+	InstanceDir         string // Directory of the instance (where mods/ folder is)
+	ServerURL           string // Sync server URL
+	RealJavaPath        string // Path to real Java (auto-detected if empty)
+	LunarisBinary       string // Path to lunaris binary (auto-detected if empty)
+	ProfileFile         string // Optional launcher_profiles.json to patch
+	ProfileID           string // Optional profile ID to patch
 	RequiredGameVersion string // Required Minecraft version (defaults to "1.20.1")
+	HookCurseForge      *bool  // Whether to hook CurseForge Java runtime (defaults to true)
 }
 
 // Install sets up LunarisInjector for a given instance.
@@ -539,6 +542,18 @@ func Install(opts InstallConfig) error {
 		}
 	}
 
+	// 5. Hook CurseForge Java runtime if applicable
+	shouldHook := true
+	if opts.HookCurseForge != nil {
+		shouldHook = *opts.HookCurseForge
+	}
+	if shouldHook {
+		runtimeDirs := FindCurseForgeJavaRuntimeDirs(opts.InstanceDir)
+		for _, rDir := range runtimeDirs {
+			_, _ = HookCurseForgeJava(rDir, lunarisBin, opts.InstanceDir)
+		}
+	}
+
 	return nil
 }
 
@@ -556,6 +571,21 @@ func Uninstall(instanceDir string, profileFile, profileID string) error {
 	localProfiles := filepath.Join(instanceDir, "launcher_profiles.json")
 	if _, err := os.Stat(localProfiles); err == nil {
 		_ = unpatchAllProfilesInFile(localProfiles)
+	}
+
+	// Unhook CurseForge Java runtime if applicable
+	runtimeDirs := FindCurseForgeJavaRuntimeDirs(instanceDir)
+	for _, rDir := range runtimeDirs {
+		_, _ = UnhookCurseForgeJava(rDir, instanceDir)
+	}
+
+	// Remove instance-local binary if present
+	if entries, err := os.ReadDir(instanceDir); err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "lunaris") && !entry.IsDir() {
+				_ = os.Remove(filepath.Join(instanceDir, entry.Name()))
+			}
+		}
 	}
 
 	return nil
@@ -699,4 +729,283 @@ func unpatchAllProfilesInFile(profilePath string) error {
 	}
 
 	return os.WriteFile(profilePath, updated, 0644)
+}
+
+const HookMarkerFile = ".lunaris_hook"
+
+// CurseForgeHookMarker tracks instances that rely on the hooked CurseForge Java runtime.
+type CurseForgeHookMarker struct {
+	Version   string   `json:"version"`
+	HookedAt  string   `json:"hooked_at"`
+	Instances []string `json:"instances"`
+}
+
+// FindCurseForgeJavaRuntimeDirs returns bin directories for CurseForge Java 17 runtimes (e.g. java-runtime-gamma).
+// It only returns runtimes if the provided instanceDir is associated with CurseForge.
+func FindCurseForgeJavaRuntimeDirs(instanceDir string) []string {
+	if instanceDir == "" {
+		return nil
+	}
+
+	instClean := filepath.Clean(instanceDir)
+	instParent := filepath.Dir(instClean)
+	mcRoot := filepath.Dir(instParent)
+
+	// 1. Direct relative check: instanceDir is in <mcRoot>/Instances/<name>
+	// where <mcRoot>/Install/java/java-runtime-gamma/bin exists.
+	gammaBin := filepath.Join(mcRoot, "Install", "java", "java-runtime-gamma", "bin")
+	if fi, err := os.Stat(gammaBin); err == nil && fi.IsDir() {
+		if containsJavaBinary(gammaBin) {
+			return []string{gammaBin}
+		}
+	}
+
+	// 2. Check storage.json to see if instanceDir is inside CurseForge's configured minecraftRoot
+	homeDir, _ := os.UserHomeDir()
+	var storagePaths []string
+	if runtime.GOOS == "windows" {
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			storagePaths = append(storagePaths, filepath.Join(appData, "CurseForge", "storage.json"))
+		}
+		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
+			storagePaths = append(storagePaths, filepath.Join(userProfile, "AppData", "Roaming", "CurseForge", "storage.json"))
+		}
+	} else if runtime.GOOS == "darwin" {
+		storagePaths = append(storagePaths, filepath.Join(homeDir, "Library", "Application Support", "CurseForge", "storage.json"))
+	} else {
+		storagePaths = append(storagePaths,
+			filepath.Join(homeDir, ".config", "CurseForge", "storage.json"),
+			filepath.Join(homeDir, ".var", "app", "com.curseforge.CurseForge", "config", "CurseForge", "storage.json"),
+		)
+	}
+
+	for _, sPath := range storagePaths {
+		if data, err := os.ReadFile(sPath); err == nil {
+			var root map[string]interface{}
+			if json.Unmarshal(data, &root) == nil {
+				if mcSettingsRaw, ok := root["minecraft-settings"].(string); ok {
+					var mcSettings struct {
+						MinecraftRoot string `json:"minecraftRoot"`
+					}
+					if json.Unmarshal([]byte(mcSettingsRaw), &mcSettings) == nil && mcSettings.MinecraftRoot != "" {
+						cleanMCRoot := filepath.Clean(mcSettings.MinecraftRoot)
+						// Only match if instanceDir is inside this CurseForge root
+						rel, err := filepath.Rel(cleanMCRoot, instClean)
+						if err == nil && !strings.HasPrefix(rel, "..") {
+							cand := filepath.Join(cleanMCRoot, "Install", "java", "java-runtime-gamma", "bin")
+							if fi, err := os.Stat(cand); err == nil && fi.IsDir() && containsJavaBinary(cand) {
+								return []string{cand}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func containsJavaBinary(binDir string) bool {
+	targets := []string{"java", "java.real"}
+	if runtime.GOOS == "windows" {
+		targets = []string{"javaw.exe", "java.exe", "javaw.real.exe", "java.real.exe"}
+	}
+	for _, name := range targets {
+		if fi, err := os.Stat(filepath.Join(binDir, name)); err == nil && !fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func getTargetBinaries() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"javaw.exe", "java.exe"}
+	}
+	return []string{"java"}
+}
+
+func realBinaryName(binName string) string {
+	if runtime.GOOS == "windows" {
+		noExt := strings.TrimSuffix(binName, filepath.Ext(binName))
+		return noExt + ".real.exe"
+	}
+	return binName + ".real"
+}
+
+// HookCurseForgeJava installs Lunaris as a transparent wrapper over CurseForge's Java runtime.
+// It backs up original binaries to *.real and replaces them with lunarisBinary.
+func HookCurseForgeJava(runtimeBinDir, lunarisBinary, instanceDir string) (bool, error) {
+	if runtimeBinDir == "" {
+		return false, errors.New("runtime bin directory cannot be empty")
+	}
+	if lunarisBinary == "" {
+		return false, errors.New("lunaris binary path cannot be empty")
+	}
+
+	targets := getTargetBinaries()
+	hookedAny := false
+
+	for _, binName := range targets {
+		binPath := filepath.Join(runtimeBinDir, binName)
+		realPath := filepath.Join(runtimeBinDir, realBinaryName(binName))
+
+		// If realPath does not exist, check if binPath exists and backup
+		if _, err := os.Stat(realPath); os.IsNotExist(err) {
+			if fi, err := os.Stat(binPath); err == nil && !fi.IsDir() {
+				// Copy binPath to realPath
+				if err := copyFilePreservingMode(binPath, realPath); err != nil {
+					return false, fmt.Errorf("failed to backup %s to %s: %w", binName, realPath, err)
+				}
+			}
+		}
+
+		// Now replace binPath with lunarisBinary
+		if _, err := os.Stat(realPath); err == nil {
+			if err := copyFilePreservingMode(lunarisBinary, binPath); err != nil {
+				return false, fmt.Errorf("failed to replace %s with Lunaris wrapper: %w", binPath, err)
+			}
+			hookedAny = true
+		}
+	}
+
+	// Update .lunaris_hook marker file
+	markerPath := filepath.Join(runtimeBinDir, HookMarkerFile)
+	marker := CurseForgeHookMarker{
+		Version:   "1.0.0",
+		HookedAt:  time.Now().UTC().Format(time.RFC3339),
+		Instances: []string{},
+	}
+
+	if data, err := os.ReadFile(markerPath); err == nil {
+		_ = json.Unmarshal(data, &marker)
+	}
+
+	if instanceDir != "" {
+		cleanInst := filepath.Clean(instanceDir)
+		found := false
+		for _, inst := range marker.Instances {
+			if filepath.Clean(inst) == cleanInst {
+				found = true
+				break
+			}
+		}
+		if !found {
+			marker.Instances = append(marker.Instances, cleanInst)
+		}
+	}
+
+	if markerBytes, err := json.MarshalIndent(marker, "", "  "); err == nil {
+		_ = os.WriteFile(markerPath, markerBytes, 0644)
+	}
+
+	return hookedAny, nil
+}
+
+// UnhookCurseForgeJava restores the original CurseForge Java runtime from *.real.
+// If other instances are still registered, the hook is preserved.
+func UnhookCurseForgeJava(runtimeBinDir, instanceDir string) (bool, error) {
+	if runtimeBinDir == "" {
+		return false, errors.New("runtime bin directory cannot be empty")
+	}
+
+	markerPath := filepath.Join(runtimeBinDir, HookMarkerFile)
+	var marker CurseForgeHookMarker
+
+	if data, err := os.ReadFile(markerPath); err == nil {
+		_ = json.Unmarshal(data, &marker)
+	}
+
+	cleanInst := ""
+	if instanceDir != "" {
+		cleanInst = filepath.Clean(instanceDir)
+	}
+
+	var remaining []string
+	for _, inst := range marker.Instances {
+		c := filepath.Clean(inst)
+		if c == cleanInst {
+			continue
+		}
+		// Prune any instance that no longer exists or doesn't have lunaris.json
+		if config.IsLunarisInstance(c) {
+			remaining = append(remaining, c)
+		}
+	}
+	marker.Instances = remaining
+
+	if len(marker.Instances) > 0 {
+		// Other active instances still need the hook; keep it in place
+		if markerBytes, err := json.MarshalIndent(marker, "", "  "); err == nil {
+			_ = os.WriteFile(markerPath, markerBytes, 0644)
+		}
+		return false, nil
+	}
+
+	// Restore original binaries
+	targets := getTargetBinaries()
+	for _, binName := range targets {
+		binPath := filepath.Join(runtimeBinDir, binName)
+		realPath := filepath.Join(runtimeBinDir, realBinaryName(binName))
+
+		if fi, err := os.Stat(realPath); err == nil && !fi.IsDir() {
+			// Restore realPath to binPath
+			_ = copyFilePreservingMode(realPath, binPath)
+			_ = os.Remove(realPath)
+		}
+	}
+
+	_ = os.Remove(markerPath)
+	return true, nil
+}
+
+// IsCurseForgeJavaHooked checks if a CurseForge Java runtime directory is currently hooked.
+func IsCurseForgeJavaHooked(runtimeBinDir string) bool {
+	markerPath := filepath.Join(runtimeBinDir, HookMarkerFile)
+	if _, err := os.Stat(markerPath); err == nil {
+		return true
+	}
+	targets := getTargetBinaries()
+	for _, binName := range targets {
+		realPath := filepath.Join(runtimeBinDir, realBinaryName(binName))
+		if fi, err := os.Stat(realPath); err == nil && !fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func copyFilePreservingMode(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	srcInfo, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	tmpDst := dst + ".tmp"
+	out, err := os.OpenFile(tmpDst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(out, in)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(tmpDst)
+		return err
+	}
+
+	mode := srcInfo.Mode() | 0111
+	_ = os.Chmod(tmpDst, mode)
+
+	_ = os.Remove(dst)
+	return os.Rename(tmpDst, dst)
 }

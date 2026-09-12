@@ -1,6 +1,7 @@
 package injector
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -51,5 +52,33 @@ func TestFindRealJava(t *testing.T) {
 	}
 	if java == "" {
 		t.Errorf("expected found Java path, got empty")
+	}
+}
+
+func TestResolveRealBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeJava := filepath.Join(tmpDir, "java")
+	fakeJavaReal := filepath.Join(tmpDir, "java.real")
+
+	_ = os.WriteFile(fakeJava, []byte("fake-wrapper"), 0755)
+	_ = os.WriteFile(fakeJavaReal, []byte("fake-real"), 0755)
+
+	if !HasSiblingRealJava(fakeJava) {
+		t.Errorf("expected HasSiblingRealJava to be true for %s", fakeJava)
+	}
+
+	resolved := ResolveRealBinary(fakeJava)
+	if resolved != fakeJavaReal {
+		t.Errorf("expected ResolveRealBinary(%s) = %s, got %s", fakeJava, fakeJavaReal, resolved)
+	}
+
+	// For a binary without .real sibling
+	standalone := filepath.Join(tmpDir, "standalone")
+	_ = os.WriteFile(standalone, []byte("code"), 0755)
+	if HasSiblingRealJava(standalone) {
+		t.Errorf("expected HasSiblingRealJava to be false for %s", standalone)
+	}
+	if ResolveRealBinary(standalone) != standalone {
+		t.Errorf("expected ResolveRealBinary(%s) = %s, got %s", standalone, standalone, ResolveRealBinary(standalone))
 	}
 }

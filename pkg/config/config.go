@@ -118,3 +118,13 @@ func FindInstanceConfig(gameDir string) (*Config, string, error) {
 
 	return nil, "", errors.New("lunaris.json configuration file not found")
 }
+
+// IsLunarisInstance checks if a directory contains a valid lunaris.json configuration file.
+func IsLunarisInstance(gameDir string) bool {
+	if gameDir == "" {
+		return false
+	}
+	cfgPath := filepath.Join(gameDir, ConfigFileName)
+	fi, err := os.Stat(cfgPath)
+	return err == nil && !fi.IsDir()
+}
