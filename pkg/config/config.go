@@ -14,6 +14,9 @@ type Config struct {
 	// ServerURL is the HTTP/HTTPS endpoint of the sync server (e.g. "http://myserver.com:8080").
 	ServerURL string `json:"server_url"`
 
+	// GameVersion is the required Minecraft version (e.g. "1.20.1").
+	GameVersion string `json:"game_version"`
+
 	// RealJavaPath is the absolute path to the actual Java executable (java or javaw.exe).
 	RealJavaPath string `json:"real_java_path"`
 
@@ -37,6 +40,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		ServerURL:     "http://localhost:8080",
+		GameVersion:   "1.20.1",
 		RealJavaPath:  "",
 		SyncDirs:      []string{"mods"},
 		DeleteExtra:   true,

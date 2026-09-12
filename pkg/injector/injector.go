@@ -1,6 +1,7 @@
 package injector
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,53 @@ func ExtractGameDir(args []string) string {
 	if cwd, err := os.Getwd(); err == nil {
 		if _, err := os.Stat(filepath.Join(cwd, "mods")); err == nil {
 			return cwd
+		}
+	}
+
+	return ""
+}
+
+// ExtractGameVersion attempts to determine the Minecraft version from launch args or instance files.
+func ExtractGameVersion(args []string, gameDir string) string {
+	// 1. Check CLI arguments for --fml.mcVersion
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--fml.mcVersion" && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+		if strings.HasPrefix(args[i], "--fml.mcVersion=") {
+			return strings.TrimPrefix(args[i], "--fml.mcVersion=")
+		}
+	}
+
+	// 2. Check minecraftinstance.json in gameDir
+	if gameDir != "" {
+		mcJSON := filepath.Join(gameDir, "minecraftinstance.json")
+		if data, err := os.ReadFile(mcJSON); err == nil {
+			var meta struct {
+				GameVersion string `json:"gameVersion"`
+				BaseModLoader struct {
+					MinecraftVersion string `json:"minecraftVersion"`
+				} `json:"baseModLoader"`
+			}
+			if json.Unmarshal(data, &meta) == nil {
+				if meta.GameVersion != "" {
+					return meta.GameVersion
+				}
+				if meta.BaseModLoader.MinecraftVersion != "" {
+					return meta.BaseModLoader.MinecraftVersion
+				}
+			}
+		}
+	}
+
+	// 3. Check CLI arguments for --version
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--version" && i+1 < len(args) {
+			v := args[i+1]
+			// e.g. "1.20.1", "1.20.1-forge-47.4.10", "forge-47.4.10"
+			if strings.Contains(v, "1.20.1") {
+				return "1.20.1"
+			}
 		}
 	}
 
@@ -77,6 +125,8 @@ func FindRealJava(configuredPath string) (string, error) {
 		searchPatterns = []string{
 			filepath.Join(homeDir, "AppData", "Local", "Packages", "*", "LocalCache", "Local", "runtime", "*", "*", "bin", "javaw.exe"),
 			filepath.Join(homeDir, "AppData", "Local", "Packages", "*", "LocalCache", "Local", "runtime", "*", "*", "bin", "java.exe"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "javaw.exe"),
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "bin", "javaw.exe"),
 			`C:\Program Files (x86)\Minecraft Launcher\runtime\*\*\bin\javaw.exe`,
 			`C:\Program Files (x86)\Minecraft Launcher\runtime\*\*\bin\java.exe`,
 			`C:\Program Files\Java\*\bin\javaw.exe`,
@@ -87,11 +137,16 @@ func FindRealJava(configuredPath string) (string, error) {
 	} else if runtime.GOOS == "darwin" {
 		searchPatterns = []string{
 			filepath.Join(homeDir, "Library", "Application Support", "minecraft", "runtime", "*", "*", "bin", "java"),
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
 			"/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java",
 		}
 	} else {
 		// Linux
 		searchPatterns = []string{
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
+			filepath.Join(homeDir, ".var", "app", "com.curseforge.CurseForge", "data", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
 			filepath.Join(homeDir, ".minecraft", "runtime", "*", "*", "bin", "java"),
 			filepath.Join(homeDir, ".minecraft", "runtime", "*", "*", "*", "bin", "java"),
 			"/usr/lib/jvm/*/bin/java",

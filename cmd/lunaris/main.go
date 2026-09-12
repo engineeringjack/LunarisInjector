@@ -99,6 +99,18 @@ func runInjector(args []string) {
 		fmt.Println("[Lunaris] Skipping file sync and launching Minecraft directly.")
 	} else {
 		fmt.Printf("[Lunaris] Loaded config from: %s\n", cfgPath)
+
+		// Version Check: ensure game version matches requirement
+		detectedVer := injector.ExtractGameVersion(args, gameDir)
+		if detectedVer != "" && cfg.GameVersion != "" && detectedVer != cfg.GameVersion {
+			fmt.Println("==================================================")
+			fmt.Printf("[Lunaris] FATAL ERROR: Minecraft version mismatch!\n")
+			fmt.Printf("[Lunaris] Expected: Minecraft %s | Instance: Minecraft %s\n", cfg.GameVersion, detectedVer)
+			fmt.Println("[Lunaris] Aborting sync to prevent corrupting incompatible game files.")
+			fmt.Println("==================================================")
+			os.Exit(1)
+		}
+
 		s := syncer.New(syncer.SyncOptions{
 			Config:      cfg,
 			GameDir:     gameDir,
@@ -144,6 +156,7 @@ func cmdInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	instanceFlag := fs.String("instance", "", "Path to the Minecraft instance directory")
 	serverFlag := fs.String("server", "", "Sync server URL (e.g. http://192.168.1.100:8080)")
+	versionFlag := fs.String("game-version", "1.20.1", "Required Minecraft version")
 	javaFlag := fs.String("java", "", "Path to the real Java binary (auto-detected if empty)")
 	profileFile := fs.String("profile-file", "", "Path to launcher_profiles.json (optional)")
 	profileID := fs.String("profile-id", "", "Profile ID in launcher_profiles.json (optional)")
@@ -152,11 +165,12 @@ func cmdInstall(args []string) {
 	// Non-interactive mode
 	if *instanceFlag != "" && *serverFlag != "" {
 		err := installer.Install(installer.InstallConfig{
-			InstanceDir:   *instanceFlag,
-			ServerURL:     *serverFlag,
-			RealJavaPath:  *javaFlag,
-			ProfileFile:   *profileFile,
-			ProfileID:     *profileID,
+			InstanceDir:         *instanceFlag,
+			ServerURL:           *serverFlag,
+			RequiredGameVersion: *versionFlag,
+			RealJavaPath:        *javaFlag,
+			ProfileFile:         *profileFile,
+			ProfileID:           *profileID,
 		})
 		if err != nil {
 			fmt.Printf("Installation failed: %v\n", err)
@@ -169,6 +183,7 @@ func cmdInstall(args []string) {
 	// Interactive mode
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("=== LunarisInjector Auto-Installer ===")
+	fmt.Println("Target Version: Minecraft 1.20.1")
 	fmt.Println("Scanning for installed Minecraft modpacks & profiles...")
 
 	detected := installer.DetectInstances()
@@ -183,7 +198,15 @@ func cmdInstall(args []string) {
 			if inst.IsInjected {
 				status = fmt.Sprintf(" [ALREADY INJECTED: %s]", inst.ConfiguredServer)
 			}
-			fmt.Printf(" [%d] [%s] %s%s\n     Path: %s\n", i+1, inst.Launcher, inst.Name, status, inst.Path)
+			verStr := inst.GameVersion
+			if verStr == "" {
+				verStr = "Unknown"
+			}
+			compatStr := "❌ Incompatible (Requires 1.20.1)"
+			if inst.IsCompatible {
+				compatStr = "✓ COMPATIBLE (1.20.1)"
+			}
+			fmt.Printf(" [%d] [%s] %s (%s) [%s]%s\n     Path: %s\n", i+1, inst.Launcher, inst.Name, verStr, compatStr, status, inst.Path)
 		}
 		fmt.Printf(" [%d] Enter custom instance folder path\n", len(detected)+1)
 
@@ -194,6 +217,12 @@ func cmdInstall(args []string) {
 			idx, err := strconv.Atoi(input)
 			if err == nil && idx >= 1 && idx <= len(detected) {
 				sel := detected[idx-1]
+				if !sel.IsCompatible {
+					fmt.Printf("\n❌ Error: Cannot install on '%s'!\n", sel.Name)
+					fmt.Printf("   This instance is on Minecraft '%s', but this modpack requires Minecraft 1.20.1.\n", sel.GameVersion)
+					fmt.Println("   Installation is not allowed on incompatible versions.")
+					continue
+				}
 				selectedPath = sel.Path
 				selectedProfileFile = sel.ProfileFile
 				selectedProfileID = sel.ProfileID
@@ -206,14 +235,22 @@ func cmdInstall(args []string) {
 	}
 
 	if selectedPath == "" {
-		fmt.Print("\nEnter instance directory (where 'mods' folder lives): ")
-		input, _ := reader.ReadString('\n')
-		selectedPath = strings.TrimSpace(input)
-	}
-
-	if selectedPath == "" {
-		fmt.Println("No instance directory selected. Aborting.")
-		return
+		for {
+			fmt.Print("\nEnter instance directory (where 'mods' folder lives): ")
+			input, _ := reader.ReadString('\n')
+			selectedPath = strings.TrimSpace(input)
+			if selectedPath == "" {
+				fmt.Println("No instance directory selected. Aborting.")
+				return
+			}
+			customVer := installer.DetectInstanceVersion(selectedPath)
+			if customVer != "" && customVer != "1.20.1" {
+				fmt.Printf("\n❌ Error: The selected folder is on Minecraft %s, but this modpack requires Minecraft 1.20.1.\n", customVer)
+				fmt.Println("   Please select a valid 1.20.1 instance.")
+				continue
+			}
+			break
+		}
 	}
 
 	// Server URL
@@ -434,17 +471,27 @@ func cmdListInstances() {
 		return
 	}
 
-	fmt.Printf("Found %d instances:\n\n", len(detected))
+	fmt.Printf("Found %d instances (Target Modpack Version: 1.20.1):\n\n", len(detected))
 	for i, inst := range detected {
 		injected := "No"
 		if inst.IsInjected {
 			injected = fmt.Sprintf("Yes (Syncing with: %s)", inst.ConfiguredServer)
 		}
+		verStr := inst.GameVersion
+		if verStr == "" {
+			verStr = "Unknown"
+		}
+		compatStr := "❌ Incompatible (Requires 1.20.1)"
+		if inst.IsCompatible {
+			compatStr = "✓ COMPATIBLE (1.20.1)"
+		}
+
 		fmt.Printf("[%d] %s (%s)\n", i+1, inst.Name, inst.Launcher)
-		fmt.Printf("    Path    : %s\n", inst.Path)
-		fmt.Printf("    Injected: %s\n", injected)
+		fmt.Printf("    Path        : %s\n", inst.Path)
+		fmt.Printf("    Version     : %s [%s]\n", verStr, compatStr)
+		fmt.Printf("    Injected    : %s\n", injected)
 		if inst.CurrentJava != "" {
-			fmt.Printf("    Java    : %s\n", inst.CurrentJava)
+			fmt.Printf("    Java        : %s\n", inst.CurrentJava)
 		}
 		fmt.Println()
 	}

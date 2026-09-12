@@ -105,6 +105,13 @@ type Plan struct {
 
 // CalculatePlan compares local files against the remote manifest to determine diffs.
 func (s *Syncer) CalculatePlan(remote *manifest.Manifest) (*Plan, error) {
+	// Verify game versions if specified
+	if remote.GameVersion != "" && s.opts.Config.GameVersion != "" {
+		if !strings.EqualFold(remote.GameVersion, s.opts.Config.GameVersion) {
+			return nil, fmt.Errorf("minecraft version mismatch: remote server is for version %s, but local config expects %s", remote.GameVersion, s.opts.Config.GameVersion)
+		}
+	}
+
 	localManifest, err := manifest.ScanDirectory(s.opts.GameDir, s.opts.Config.SyncDirs, s.opts.Config.IgnoreFiles)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan local directory: %w", err)

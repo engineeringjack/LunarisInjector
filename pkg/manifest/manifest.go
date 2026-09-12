@@ -22,9 +22,10 @@ type FileEntry struct {
 
 // Manifest represents the complete list of files and their expected hashes.
 type Manifest struct {
-	Version   int         `json:"version"`   // Manifest format version
-	Timestamp int64       `json:"timestamp"` // Unix timestamp when generated
-	Files     []FileEntry `json:"files"`     // List of tracked files
+	Version         int         `json:"version"`                    // Manifest format version
+	GameVersion     string      `json:"game_version,omitempty"`     // Target Minecraft version (e.g. "1.20.1")
+	Timestamp       int64       `json:"timestamp"`                  // Unix timestamp when generated
+	Files           []FileEntry `json:"files"`                      // List of tracked files
 }
 
 // FileMap returns a lookup map of relative path -> FileEntry for quick matching.
@@ -95,10 +96,23 @@ func ScanDirectory(baseDir string, subDirs []string, ignorePatterns []string) (*
 		subDirs = []string{"mods"}
 	}
 
+	gameVersion := "1.20.1"
+	// Try to detect gameVersion from minecraftinstance.json
+	mcJSON := filepath.Join(baseDir, "minecraftinstance.json")
+	if data, err := os.ReadFile(mcJSON); err == nil {
+		var meta struct {
+			GameVersion string `json:"gameVersion"`
+		}
+		if json.Unmarshal(data, &meta) == nil && meta.GameVersion != "" {
+			gameVersion = meta.GameVersion
+		}
+	}
+
 	manifest := &Manifest{
-		Version:   1,
-		Timestamp: time.Now().Unix(),
-		Files:     []FileEntry{},
+		Version:     1,
+		GameVersion: gameVersion,
+		Timestamp:   time.Now().Unix(),
+		Files:       []FileEntry{},
 	}
 
 	for _, subDir := range subDirs {

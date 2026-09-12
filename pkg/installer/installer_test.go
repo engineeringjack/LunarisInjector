@@ -88,3 +88,40 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Errorf("expected javaDir to be removed after uninstall")
 	}
 }
+
+func TestInstallVersionMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	instanceDir := filepath.Join(tmpDir, "instance-1.26.2")
+	_ = os.MkdirAll(instanceDir, 0755)
+
+	// Create minecraftinstance.json with version 1.26.2
+	mcJSON := filepath.Join(instanceDir, "minecraftinstance.json")
+	_ = os.WriteFile(mcJSON, []byte(`{"name":"Wrong Version Modpack","gameVersion":"1.26.2"}`), 0644)
+
+	err := Install(InstallConfig{
+		InstanceDir:         instanceDir,
+		ServerURL:           "http://myserver:8080",
+		RequiredGameVersion: "1.20.1",
+	})
+
+	if err == nil {
+		t.Fatalf("expected error when installing on mismatched version 1.26.2, got nil")
+	}
+
+	// Now test with matching 1.20.1
+	matchingDir := filepath.Join(tmpDir, "instance-1.20.1")
+	_ = os.MkdirAll(matchingDir, 0755)
+	_ = os.WriteFile(filepath.Join(matchingDir, "minecraftinstance.json"), []byte(`{"name":"Correct Modpack","gameVersion":"1.20.1"}`), 0644)
+
+	err = Install(InstallConfig{
+		InstanceDir:         matchingDir,
+		ServerURL:           "http://myserver:8080",
+		RequiredGameVersion: "1.20.1",
+		RealJavaPath:        "/usr/bin/java",
+	})
+
+	if err != nil {
+		t.Fatalf("expected success for 1.20.1, got: %v", err)
+	}
+}
+
