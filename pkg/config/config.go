@@ -9,6 +9,7 @@ import (
 
 const ConfigFileName = "lunaris.json"
 const DefaultServerURL = "https://lunaris.csfrederick.com"
+const Version = "1.0.1"
 
 // Config contains the configuration settings for LunarisInjector.
 type Config struct {

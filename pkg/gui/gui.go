@@ -262,7 +262,7 @@ func (s *Server) Handler() http.Handler {
 			repo = updater.DefaultGitHubRepo
 		}
 
-		info, hasUpdate, err := updater.CheckUpdate(ctx, repo, "1.0.0")
+		info, hasUpdate, err := updater.CheckUpdate(ctx, repo, config.Version)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"has_update": false,

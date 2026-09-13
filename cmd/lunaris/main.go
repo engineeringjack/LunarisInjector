@@ -23,7 +23,7 @@ import (
 	"github.com/engineeringjack/LunarisInjector/pkg/updater"
 )
 
-const Version = "1.0.0"
+const Version = config.Version
 
 func main() {
 	args := os.Args[1:]

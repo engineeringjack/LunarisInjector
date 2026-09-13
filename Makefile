@@ -26,11 +26,13 @@ package-macos: build-all
 	@mkdir -p dist/Lunaris-AppleSilicon.app/Contents/MacOS
 	@cp dist/lunaris-darwin-arm64 dist/Lunaris-AppleSilicon.app/Contents/MacOS/lunaris
 	@chmod +x dist/Lunaris-AppleSilicon.app/Contents/MacOS/lunaris
-	@cd dist && zip -r -y Lunaris-macOS-AppleSilicon.zip Lunaris-AppleSilicon.app
+	@printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>CFBundleExecutable</key><string>lunaris</string>\n<key>CFBundleIdentifier</key><string>com.engineeringjack.lunaris</string>\n<key>CFBundleName</key><string>Lunaris</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>1.0.1</string>\n<key>LSMinimumSystemVersion</key><string>10.15</string>\n<key>NSHighResolutionCapable</key><true/>\n</dict>\n</plist>' > dist/Lunaris-AppleSilicon.app/Contents/Info.plist
+	@cd dist && rm -f Lunaris-macOS-AppleSilicon.zip && zip -r -y Lunaris-macOS-AppleSilicon.zip Lunaris-AppleSilicon.app
 	@mkdir -p dist/Lunaris-Intel.app/Contents/MacOS
 	@cp dist/lunaris-darwin-amd64 dist/Lunaris-Intel.app/Contents/MacOS/lunaris
 	@chmod +x dist/Lunaris-Intel.app/Contents/MacOS/lunaris
-	@cd dist && zip -r -y Lunaris-macOS-Intel.zip Lunaris-Intel.app
+	@printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>CFBundleExecutable</key><string>lunaris</string>\n<key>CFBundleIdentifier</key><string>com.engineeringjack.lunaris</string>\n<key>CFBundleName</key><string>Lunaris</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>1.0.1</string>\n<key>LSMinimumSystemVersion</key><string>10.15</string>\n<key>NSHighResolutionCapable</key><true/>\n</dict>\n</plist>' > dist/Lunaris-Intel.app/Contents/Info.plist
+	@cd dist && rm -f Lunaris-macOS-Intel.zip && zip -r -y Lunaris-macOS-Intel.zip Lunaris-Intel.app
 	@echo "macOS permission-preserving .app and .zip packages created in dist/"
 
 package-all: package-macos

@@ -40,12 +40,14 @@ jobs:
           mkdir -p dist/Lunaris-AppleSilicon.app/Contents/MacOS
           cp dist/lunaris-darwin-arm64 dist/Lunaris-AppleSilicon.app/Contents/MacOS/lunaris
           chmod +x dist/Lunaris-AppleSilicon.app/Contents/MacOS/lunaris
+          printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>CFBundleExecutable</key><string>lunaris</string>\n<key>CFBundleIdentifier</key><string>com.engineeringjack.lunaris</string>\n<key>CFBundleName</key><string>Lunaris</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>${{ github.ref_name }}</string>\n<key>LSMinimumSystemVersion</key><string>10.15</string>\n<key>NSHighResolutionCapable</key><true/>\n</dict>\n</plist>' > dist/Lunaris-AppleSilicon.app/Contents/Info.plist
           (cd dist && zip -r -y Lunaris-macOS-AppleSilicon.zip Lunaris-AppleSilicon.app)
 
           # 2. macOS Intel App Bundle
           mkdir -p dist/Lunaris-Intel.app/Contents/MacOS
           cp dist/lunaris-darwin-amd64 dist/Lunaris-Intel.app/Contents/MacOS/lunaris
           chmod +x dist/Lunaris-Intel.app/Contents/MacOS/lunaris
+          printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>CFBundleExecutable</key><string>lunaris</string>\n<key>CFBundleIdentifier</key><string>com.engineeringjack.lunaris</string>\n<key>CFBundleName</key><string>Lunaris</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleShortVersionString</key><string>${{ github.ref_name }}</string>\n<key>LSMinimumSystemVersion</key><string>10.15</string>\n<key>NSHighResolutionCapable</key><true/>\n</dict>\n</plist>' > dist/Lunaris-Intel.app/Contents/Info.plist
           (cd dist && zip -r -y Lunaris-macOS-Intel.zip Lunaris-Intel.app)
 
       - name: Publish GitHub Release
