@@ -17,19 +17,6 @@ When the player clicks **"Play"** in CurseForge, LunarisInjector intercepts the 
 
 ---
 
-## 🏗 Architecture Overview
-
-```mermaid
-flowchart LR
-    A[CurseForge / Launcher] -->|1. Invokes Java Binary| B[LunarisInjector]
-    B -->|2. GET /manifest.json| C[Remote Server]
-    B -->|3. SHA-256 Diff Check| D[Local mods/ folder]
-    C -->|4. Download updates / deletes extra| D
-    B -->|5. Spawns with original args| E[Real Java / Minecraft]
-```
-
----
-
 ## 🚀 Quick Start Guide
 
 ### 1. Server Setup (For Modpack Authors)
