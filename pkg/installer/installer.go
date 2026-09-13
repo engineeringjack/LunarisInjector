@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slide/LunarisInjector/pkg/config"
-	"github.com/slide/LunarisInjector/pkg/injector"
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
+	"github.com/engineeringjack/LunarisInjector/pkg/injector"
 )
 
 const TargetMinecraftVersion = "1.20.1"
@@ -30,6 +30,7 @@ type InstanceInfo struct {
 	IsInjected       bool   `json:"is_injected"`
 	ConfiguredServer string `json:"configured_server,omitempty"`
 	EnableVR         bool   `json:"enable_vr"`
+	ModCount         int    `json:"mod_count"`
 }
 
 // DetectInstances scans known paths for installed Minecraft modpacks and instances.
@@ -177,6 +178,27 @@ func getCurseForgeDirectories(homeDir string) []string {
 	return result
 }
 
+// CountExistingMods counts mod files (e.g. .jar, .zip) inside an instance's mods/ folder.
+func CountExistingMods(instanceDir string) int {
+	modsDir := filepath.Join(instanceDir, "mods")
+	entries, err := os.ReadDir(modsDir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func inspectCurseForgeInstance(instPath, fallbackName string) *InstanceInfo {
 	mcInstJSON := filepath.Join(instPath, "minecraftinstance.json")
 	name := fallbackName
@@ -220,6 +242,7 @@ func inspectCurseForgeInstance(instPath, fallbackName string) *InstanceInfo {
 		Path:         instPath,
 		GameVersion:  gameVersion,
 		IsCompatible: (gameVersion == TargetMinecraftVersion),
+		ModCount:     CountExistingMods(instPath),
 	}
 
 	// Check if lunaris.json exists
@@ -296,6 +319,7 @@ func inspectVanillaLauncherProfiles(profilePath string) []InstanceInfo {
 			ProfileFile:  profilePath,
 			ProfileID:    id,
 			CurrentJava:  p.JavaDir,
+			ModCount:     CountExistingMods(gDir),
 		}
 
 		cfgPath := filepath.Join(gDir, config.ConfigFileName)
@@ -359,6 +383,7 @@ func inspectPrismInstance(instPath, fallbackName string) *InstanceInfo {
 		Path:         gamePath,
 		GameVersion:  gameVersion,
 		IsCompatible: (gameVersion == TargetMinecraftVersion),
+		ModCount:     CountExistingMods(gamePath),
 	}
 
 	cfgPath := filepath.Join(gamePath, config.ConfigFileName)

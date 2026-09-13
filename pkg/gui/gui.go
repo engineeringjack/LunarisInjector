@@ -12,10 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slide/LunarisInjector/pkg/config"
-	"github.com/slide/LunarisInjector/pkg/installer"
-	"github.com/slide/LunarisInjector/pkg/manifest"
-	"github.com/slide/LunarisInjector/pkg/syncer"
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
+	"github.com/engineeringjack/LunarisInjector/pkg/installer"
+	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/syncer"
+	"github.com/engineeringjack/LunarisInjector/pkg/updater"
 )
 
 // GUIOptions configures the graphical installer interface.
@@ -248,6 +249,37 @@ func (s *Server) Handler() http.Handler {
 			time.Sleep(300 * time.Millisecond)
 			s.Stop()
 		}()
+	})
+
+	// 7. API: Check for GitHub update
+	mux.HandleFunc("/api/check-update", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		repo := r.URL.Query().Get("repo")
+		if repo == "" {
+			repo = updater.DefaultGitHubRepo
+		}
+
+		info, hasUpdate, err := updater.CheckUpdate(ctx, repo, "1.0.0")
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"has_update": false,
+				"error":      err.Error(),
+			})
+			return
+		}
+
+		resp := map[string]interface{}{
+			"has_update": hasUpdate,
+		}
+		if info != nil {
+			resp["version"] = info.Version
+			resp["asset_name"] = info.AssetName
+			resp["asset_size"] = info.AssetSize
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	// Wrap mux so any incoming HTTP request flags that the client has connected
@@ -1003,6 +1035,15 @@ const IndexHTML = `<!DOCTYPE html>
                     <!-- Injected via JS -->
                 </div>
 
+                <div id="existingModsWarning" style="display:none; margin-top:12px; padding:12px 14px; background:rgba(245, 158, 11, 0.12); border:1px solid rgba(245, 158, 11, 0.4); border-radius:6px; color:#fde68a; font-size:0.86rem; line-height:1.45;">
+                    <div style="font-weight:600; margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                        <span>⚠️ Warning: Existing Mods Detected</span>
+                    </div>
+                    <div id="existingModsWarningText">
+                        This instance already contains existing mods. Installing Lunaris will synchronize your mods with the server and will OVERWRITE or DELETE local mods not present on the server.
+                    </div>
+                </div>
+
                 <div class="custom-path-card">
                     <label style="font-size:0.84rem; color:var(--text-muted); cursor:pointer;">
                         <input type="radio" name="instanceRadio" value="__custom__" id="radioCustom" style="vertical-align:middle; margin-right:6px; accent-color:#6366f1;">
@@ -1188,6 +1229,7 @@ const IndexHTML = `<!DOCTYPE html>
                         document.getElementById('vrToggle').checked = true;
                         updateVRBanner();
                     }
+                    updateModsWarning(inst);
                 }
 
                 let badges = "";
@@ -1206,6 +1248,10 @@ const IndexHTML = `<!DOCTYPE html>
                     badges += '<span class="badge badge-compat">1.20.1</span> ';
                 } else {
                     badges += '<span class="badge" style="background:#2b1818; border:1px solid #572121; color:#f87171;">MC ' + escapeHtml(inst.game_version || 'Unknown') + '</span> ';
+                }
+
+                if (inst.mod_count > 0 && !inst.is_injected) {
+                    badges += '<span class="badge" style="background:#2b1d0c; border:1px solid #78350f; color:#fcd34d;">⚠️ ' + inst.mod_count + ' Mods</span> ';
                 }
 
                 if (inst.is_injected) {
@@ -1231,6 +1277,19 @@ const IndexHTML = `<!DOCTYPE html>
             });
         }
 
+        function updateModsWarning(inst) {
+            const warnBox = document.getElementById('existingModsWarning');
+            const warnText = document.getElementById('existingModsWarningText');
+            if (!warnBox || !warnText) return;
+
+            if (inst && inst.mod_count > 0 && !inst.is_injected) {
+                warnBox.style.display = "block";
+                warnText.innerHTML = "This instance already contains <strong>" + inst.mod_count + " mod file(s)</strong> in its 'mods/' folder. Installing LunarisInjector will synchronize your files with the server, which will <strong>OVERWRITE or DELETE</strong> any existing mods that are not part of the remote modpack.";
+            } else {
+                warnBox.style.display = "none";
+            }
+        }
+
         function selectInstance(index) {
             document.querySelectorAll('.instance-item').forEach(el => el.classList.remove('selected'));
             document.getElementById('radioCustom').checked = false;
@@ -1249,6 +1308,7 @@ const IndexHTML = `<!DOCTYPE html>
                 document.getElementById('vrToggle').checked = false;
             }
             updateVRBanner();
+            updateModsWarning(inst);
         }
 
         function selectCustomRadio() {
@@ -1256,6 +1316,7 @@ const IndexHTML = `<!DOCTYPE html>
             document.querySelectorAll('.instance-radio').forEach(el => el.checked = false);
             document.getElementById('radioCustom').checked = true;
             selectedPath = document.getElementById('customPathInput').value.trim();
+            updateModsWarning(null);
         }
 
         function updateVRBanner() {
@@ -1288,6 +1349,20 @@ const IndexHTML = `<!DOCTYPE html>
             if (!path) {
                 showError("Please select an instance or enter a custom directory path.");
                 return;
+            }
+
+            // Check if selected instance already has mods and warn user
+            const currentInst = detectedInstances.find(it => it.path === path);
+            if (currentInst && currentInst.mod_count > 0 && !currentInst.is_injected) {
+                const confirmed = confirm(
+                    "⚠️ WARNING: OVERWRITE EXISTING MODS?\n\n" +
+                    "Instance '" + currentInst.name + "' already contains " + currentInst.mod_count + " mod(s) in its 'mods/' folder.\n\n" +
+                    "Installing LunarisInjector will synchronize your files with the server and will OVERWRITE or DELETE existing mods not present in the modpack manifest.\n\n" +
+                    "Are you sure you want to proceed and overwrite existing mods?"
+                );
+                if (!confirmed) {
+                    return;
+                }
             }
 
             const payload = {

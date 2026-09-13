@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slide/LunarisInjector/pkg/config"
-	"github.com/slide/LunarisInjector/pkg/installer"
-	"github.com/slide/LunarisInjector/pkg/manifest"
-	"github.com/slide/LunarisInjector/pkg/server"
-	"github.com/slide/LunarisInjector/pkg/syncer"
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
+	"github.com/engineeringjack/LunarisInjector/pkg/installer"
+	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/server"
+	"github.com/engineeringjack/LunarisInjector/pkg/syncer"
 )
 
 func TestEndToEndSync(t *testing.T) {

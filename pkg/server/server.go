@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slide/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
 )
 
 // ServerOptions configures the sync server.

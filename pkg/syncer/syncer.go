@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/slide/LunarisInjector/pkg/config"
-	"github.com/slide/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
+	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
 )
 
 var ErrOfflineProceed = errors.New("remote server unreachable, launching offline")

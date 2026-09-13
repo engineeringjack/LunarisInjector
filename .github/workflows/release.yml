@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Compile Cross-Platform Binaries
+        run: |
+          mkdir -p dist
+          # Windows 64-bit
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/lunaris-windows-amd64.exe ./cmd/lunaris
+          # Linux 64-bit
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/lunaris-linux-amd64 ./cmd/lunaris
+          # macOS Apple Silicon (M1/M2/M3/M4)
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/lunaris-darwin-arm64 ./cmd/lunaris
+          # macOS Intel (x86_64)
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/lunaris-darwin-amd64 ./cmd/lunaris
+          chmod +x dist/lunaris-*
+
+      - name: Package macOS App Bundles & ZIPs
+        run: |
+          # 1. macOS Apple Silicon App Bundle
+          mkdir -p dist/Lunaris-AppleSilicon.app/Contents/MacOS
+          cp dist/lunaris-darwin-arm64 dist/Lunaris-AppleSilicon.app/Contents/MacOS/lunaris
+          chmod +x dist/Lunaris-AppleSilicon.app/Contents/MacOS/lunaris
+          (cd dist && zip -r -y Lunaris-macOS-AppleSilicon.zip Lunaris-AppleSilicon.app)
+
+          # 2. macOS Intel App Bundle
+          mkdir -p dist/Lunaris-Intel.app/Contents/MacOS
+          cp dist/lunaris-darwin-amd64 dist/Lunaris-Intel.app/Contents/MacOS/lunaris
+          chmod +x dist/Lunaris-Intel.app/Contents/MacOS/lunaris
+          (cd dist && zip -r -y Lunaris-macOS-Intel.zip Lunaris-Intel.app)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/lunaris-windows-amd64.exe
+            dist/lunaris-linux-amd64
+            dist/lunaris-darwin-arm64
+            dist/lunaris-darwin-amd64
+            dist/Lunaris-macOS-AppleSilicon.zip
+            dist/Lunaris-macOS-Intel.zip
+          generate_release_notes: true

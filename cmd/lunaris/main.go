@@ -13,13 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slide/LunarisInjector/pkg/config"
-	"github.com/slide/LunarisInjector/pkg/gui"
-	"github.com/slide/LunarisInjector/pkg/injector"
-	"github.com/slide/LunarisInjector/pkg/installer"
-	"github.com/slide/LunarisInjector/pkg/manifest"
-	"github.com/slide/LunarisInjector/pkg/server"
-	"github.com/slide/LunarisInjector/pkg/syncer"
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
+	"github.com/engineeringjack/LunarisInjector/pkg/gui"
+	"github.com/engineeringjack/LunarisInjector/pkg/injector"
+	"github.com/engineeringjack/LunarisInjector/pkg/installer"
+	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/server"
+	"github.com/engineeringjack/LunarisInjector/pkg/syncer"
+	"github.com/engineeringjack/LunarisInjector/pkg/updater"
 )
 
 const Version = "1.0.0"
@@ -74,7 +75,7 @@ func main() {
 // isAdministrativeCommand checks if the first argument is a Lunaris CLI subcommand.
 func isAdministrativeCommand(cmd string) bool {
 	switch strings.ToLower(cmd) {
-	case "gui", "install", "uninstall", "server", "serve", "generate", "gen", "verify", "check", "instances", "list":
+	case "gui", "install", "uninstall", "update", "upgrade", "server", "serve", "generate", "gen", "verify", "check", "instances", "list":
 		return true
 	default:
 		return false
@@ -112,6 +113,8 @@ func handleAdminCommand(args []string) {
 		cmdInstall(args[1:])
 	case "uninstall":
 		cmdUninstall(args[1:])
+	case "update", "upgrade":
+		cmdUpdate(args[1:])
 	case "server", "serve":
 		cmdServer(args[1:])
 	case "generate", "gen":
@@ -163,12 +166,27 @@ func runInjector(args []string, siblingRealJava string) {
 	}
 	fmt.Printf("[Lunaris] Game Directory: %s\n", gameDir)
 
+	updater.CleanupOld()
+
 	cfg, cfgPath, err := config.FindInstanceConfig(gameDir)
 	if err != nil {
 		fmt.Println("[Lunaris] Warning: No lunaris.json configuration found.")
 		fmt.Println("[Lunaris] Skipping file sync and launching Minecraft directly.")
 	} else {
 		fmt.Printf("[Lunaris] Loaded config from: %s\n", cfgPath)
+
+		// Check for auto-update if enabled
+		if cfg.AutoUpdate {
+			repo := cfg.GitHubRepo
+			if repo == "" {
+				repo = updater.DefaultGitHubRepo
+			}
+			updateCtx, updateCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _ = updater.AutoCheckAndUpdate(updateCtx, repo, Version, gameDir, false, func(format string, a ...interface{}) {
+				fmt.Printf(format+"\n", a...)
+			})
+			updateCancel()
+		}
 
 		// Version Check: ensure game version matches requirement
 		detectedVer := injector.ExtractGameVersion(args, gameDir)
@@ -236,12 +254,27 @@ func cmdInstall(args []string) {
 	profileID := fs.String("profile-id", "", "Profile ID in launcher_profiles.json (optional)")
 	vrFlag := fs.Bool("vr", false, "Enable optional Windows VR mods & configs (Vivecraft)")
 	enableVRFlag := fs.Bool("enable-vr", false, "Alias for --vr")
+	forceFlag := fs.Bool("force", false, "Force installation and overwrite existing mods without confirmation")
+	overwriteFlag := fs.Bool("overwrite-mods", false, "Alias for --force to allow overwriting existing mods")
 	cliFlag := fs.Bool("cli", false, "Run in interactive terminal mode instead of graphical installer")
 	guiFlag := fs.Bool("gui", false, "Force launch graphical installer")
 	_ = fs.Parse(args)
 
 	// Non-interactive mode (when --instance is explicitly passed)
 	if *instanceFlag != "" {
+		existingMods := installer.CountExistingMods(*instanceFlag)
+		if existingMods > 0 && !config.IsLunarisInstance(*instanceFlag) {
+			if !*forceFlag && !*overwriteFlag {
+				fmt.Println("⚠️  WARNING: Existing mods detected!")
+				fmt.Printf("   Instance '%s' already contains %d mod file(s) in 'mods/'.\n", *instanceFlag, existingMods)
+				fmt.Println("   Installing LunarisInjector will synchronize this directory with the remote server,")
+				fmt.Println("   which will OVERWRITE or DELETE local mods not present in the modpack manifest.")
+				fmt.Println("   Pass --force or --overwrite-mods to proceed.")
+				os.Exit(1)
+			}
+			fmt.Printf("⚠️  Proceeding with overwrite of %d existing mod(s) in: %s\n", existingMods, *instanceFlag)
+		}
+
 		enableVR := *vrFlag || *enableVRFlag
 		err := installer.Install(installer.InstallConfig{
 			InstanceDir:         *instanceFlag,
@@ -326,7 +359,11 @@ func cmdInstall(args []string) {
 				}
 				status = fmt.Sprintf("Already hooked (%s%s)", inst.ConfiguredServer, vrInfo)
 			}
-			fmt.Printf("  [%d] %s (%s)%s\n", i+1, inst.Name, inst.Launcher, recTag)
+			modNote := ""
+			if inst.ModCount > 0 && !inst.IsInjected {
+				modNote = fmt.Sprintf(" (⚠️  %d existing mods)", inst.ModCount)
+			}
+			fmt.Printf("  [%d] %s (%s)%s%s\n", i+1, inst.Name, inst.Launcher, recTag, modNote)
 			fmt.Printf("      Path   : %s\n", inst.Path)
 			fmt.Printf("      Status : %s\n", status)
 		}
@@ -434,6 +471,11 @@ func cmdInstall(args []string) {
 			vrStatus = "Enabled (Windows VR / Vivecraft)"
 		}
 		fmt.Printf("│  Windows VR: %-46s │\n", truncateStr(vrStatus, 46))
+		existingMods := installer.CountExistingMods(selectedPath)
+		if existingMods > 0 && !config.IsLunarisInstance(selectedPath) {
+			warnStr := fmt.Sprintf("⚠️  %d mods will be overwritten!", existingMods)
+			fmt.Printf("│  Warning   : %-46s │\n", truncateStr(warnStr, 46))
+		}
 		fmt.Println("╰─────────────────────────────────────────────────────────────╯")
 	}
 
@@ -485,6 +527,27 @@ func cmdInstall(args []string) {
 			renderPlan()
 		} else if strings.EqualFold(input, "q") {
 			fmt.Println("Installation cancelled.")
+			return
+		}
+	}
+
+	// If existing mods are found in an unhooked instance, require explicit confirmation before overwriting
+	existingMods := installer.CountExistingMods(selectedPath)
+	if existingMods > 0 && !config.IsLunarisInstance(selectedPath) {
+		fmt.Println()
+		fmt.Println("╭─────────────────────────────────────────────────────────────╮")
+		fmt.Println("│ ⚠️  WARNING: EXISTING MODS WILL BE OVERWRITTEN              │")
+		fmt.Println("├─────────────────────────────────────────────────────────────┤")
+		fmt.Printf("│  This instance already contains %-3d mod file(s).            │\n", existingMods)
+		fmt.Println("│  Installing LunarisInjector will synchronize your files with│")
+		fmt.Println("│  the server, which will OVERWRITE and DELETE any local mods │")
+		fmt.Println("│  that are not present on the server!                        │")
+		fmt.Println("╰─────────────────────────────────────────────────────────────╯")
+		fmt.Print("\nAre you sure you want to OVERWRITE existing mods? (yes/no): ")
+		confirmInput, _ := reader.ReadString('\n')
+		confirmInput = strings.TrimSpace(confirmInput)
+		if !strings.EqualFold(confirmInput, "yes") && !strings.EqualFold(confirmInput, "y") {
+			fmt.Println("Installation cancelled to protect existing mods.")
 			return
 		}
 	}
@@ -625,6 +688,46 @@ func cmdUninstall(args []string) {
 		if !installer.IsCurseForgeJavaHooked(r) {
 			fmt.Printf("✔ Restored stock CurseForge Java runtime at: %s\n", r)
 		}
+	}
+}
+
+func cmdUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	repoFlag := fs.String("repo", updater.DefaultGitHubRepo, "GitHub repository to check (e.g. user/repo)")
+	forceFlag := fs.Bool("force", false, "Force update even if version is up-to-date")
+	_ = fs.Parse(args)
+
+	updater.CleanupOld()
+
+	fmt.Printf("Checking for updates from GitHub (%s)...\n", *repoFlag)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	info, hasUpdate, err := updater.CheckUpdate(ctx, *repoFlag, Version)
+	if err != nil {
+		fmt.Printf("❌ Update check failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !hasUpdate && !*forceFlag {
+		fmt.Printf("✔ LunarisInjector is up to date (v%s).\n", Version)
+		return
+	}
+
+	if info != nil {
+		fmt.Printf("✦ New version found: v%s (Current: v%s)\n", info.Version, Version)
+		if info.AssetSize > 0 {
+			fmt.Printf("✦ Asset: %s (%.2f MB)\n", info.AssetName, float64(info.AssetSize)/(1024*1024))
+		}
+		if err := updater.SelfUpdate(ctx, info.AssetURL, func(format string, a ...interface{}) {
+			fmt.Printf(format+"\n", a...)
+		}); err != nil {
+			fmt.Printf("❌ Update failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✔ Successfully updated LunarisInjector to v%s!\n", info.Version)
+	} else if *forceFlag {
+		fmt.Printf("No newer version found, but --force was specified. No binary replaced.\n")
 	}
 }
 
@@ -853,6 +956,7 @@ COMMANDS:
   gui           Launch the modern graphical web installer interface
   install       Set up an instance (opens GUI by default; pass --cli for terminal)
   uninstall     Revert an instance back to normal
+  update        Check GitHub and update LunarisInjector to the latest release
   server        Run a built-in sync server with live manifest & file downloads
   generate      Generate a static manifest.json from a folder (for Nginx, S3, etc.)
   verify        Check an instance's files against the server without launching

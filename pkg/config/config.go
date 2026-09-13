@@ -38,6 +38,12 @@ type Config struct {
 
 	// EnableVR enables synchronization of optional Windows VR mods and configs (e.g. Vivecraft).
 	EnableVR bool `json:"enable_vr"`
+
+	// AutoUpdate enables automatic checking and updating of the LunarisInjector executable from GitHub.
+	AutoUpdate bool `json:"auto_update"`
+
+	// GitHubRepo specifies the GitHub repository for auto-updates (default: "engineeringjack/LunarisInjector").
+	GitHubRepo string `json:"github_repo,omitempty"`
 }
 
 // DefaultSyncDirs defines the default directories synchronized between server and client.
@@ -55,6 +61,8 @@ func DefaultConfig() *Config {
 		OfflineLaunch: true,
 		TimeoutSec:    10,
 		EnableVR:      false,
+		AutoUpdate:    true,
+		GitHubRepo:    "engineeringjack/LunarisInjector",
 	}
 }
 
@@ -75,6 +83,9 @@ func Load(path string) (*Config, error) {
 	}
 	if len(cfg.SyncDirs) == 0 {
 		cfg.SyncDirs = []string{"mods", "config", "global_packs"}
+	}
+	if cfg.GitHubRepo == "" {
+		cfg.GitHubRepo = "engineeringjack/LunarisInjector"
 	}
 
 	return cfg, nil

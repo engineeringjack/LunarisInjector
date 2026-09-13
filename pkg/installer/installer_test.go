@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/slide/LunarisInjector/pkg/config"
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
 )
 
 func TestInstallAndUninstall(t *testing.T) {
@@ -224,6 +224,34 @@ func TestHookAndUnhookCurseForgeJava(t *testing.T) {
 	// Verify .real is deleted
 	if _, err := os.Stat(realPath); !os.IsNotExist(err) {
 		t.Errorf("expected %s to be deleted after unhook", realPath)
+	}
+}
+
+func TestCountExistingMods(t *testing.T) {
+	tmpDir := t.TempDir()
+	instanceDir := filepath.Join(tmpDir, "my-modpack")
+
+	// No mods directory
+	if count := CountExistingMods(instanceDir); count != 0 {
+		t.Errorf("expected 0 mods for nonexistent directory, got %d", count)
+	}
+
+	// Empty mods directory
+	modsDir := filepath.Join(instanceDir, "mods")
+	_ = os.MkdirAll(modsDir, 0755)
+	if count := CountExistingMods(instanceDir); count != 0 {
+		t.Errorf("expected 0 mods for empty directory, got %d", count)
+	}
+
+	// Add files: 2 valid mods, 1 subfolder, 1 hidden file, 1 tmp file
+	_ = os.WriteFile(filepath.Join(modsDir, "jei.jar"), []byte("mod1"), 0644)
+	_ = os.WriteFile(filepath.Join(modsDir, "appleskin.jar"), []byte("mod2"), 0644)
+	_ = os.MkdirAll(filepath.Join(modsDir, "memory_dumps"), 0755)
+	_ = os.WriteFile(filepath.Join(modsDir, ".DS_Store"), []byte("junk"), 0644)
+	_ = os.WriteFile(filepath.Join(modsDir, "download.tmp"), []byte("temp"), 0644)
+
+	if count := CountExistingMods(instanceDir); count != 2 {
+		t.Errorf("expected 2 mods, got %d", count)
 	}
 }
 
