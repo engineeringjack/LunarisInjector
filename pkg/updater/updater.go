@@ -64,8 +64,10 @@ func CheckUpdate(ctx context.Context, repo, currentVersion string) (*ReleaseInfo
 	if err != nil {
 		return nil, false, err
 	}
-	defer resp.Body.Close()
-
+	if resp.StatusCode == http.StatusNotFound {
+		// No release published yet on this repository
+		return nil, false, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
 	}
@@ -106,6 +108,11 @@ func MatchAsset(assets []GitHubAsset, goos, goarch string) *GitHubAsset {
 
 	for _, a := range assets {
 		name := strings.ToLower(a.Name)
+
+		// Skip archives (.zip, .tar.gz, .dmg) since self-updater replaces the raw binary
+		if strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".dmg") {
+			continue
+		}
 
 		// Filter by OS
 		switch goos {
