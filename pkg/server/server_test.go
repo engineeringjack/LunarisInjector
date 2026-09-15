@@ -125,4 +125,33 @@ func TestServerManifestAndFileServing(t *testing.T) {
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("expected status 200 for index, got %d", rr3.Code)
 	}
+
+	// Test 5: GET /installers/Lunaris-macOS.dmg (smart GitHub redirect fallback)
+	reqInstaller := httptest.NewRequest(http.MethodGet, "/installers/Lunaris-macOS.dmg", nil)
+	rrInstaller := httptest.NewRecorder()
+	handler.ServeHTTP(rrInstaller, reqInstaller)
+
+	if rrInstaller.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected status 307 redirect for missing installer, got %d", rrInstaller.Code)
+	}
+	expectedLoc := "https://github.com/engineeringjack/LunarisInjector/releases/latest/download/Lunaris-macOS.dmg"
+	if loc := rrInstaller.Header().Get("Location"); loc != expectedLoc {
+		t.Errorf("expected redirect location %q, got %q", expectedLoc, loc)
+	}
+
+	// Test 6: GET /installers/test.deb (local file serving with correct MIME type)
+	installersDir := filepath.Join(tmpDir, "installers")
+	_ = os.MkdirAll(installersDir, 0755)
+	_ = os.WriteFile(filepath.Join(installersDir, "test.deb"), []byte("deb content"), 0644)
+
+	reqLocalDeb := httptest.NewRequest(http.MethodGet, "/installers/test.deb", nil)
+	rrLocalDeb := httptest.NewRecorder()
+	handler.ServeHTTP(rrLocalDeb, reqLocalDeb)
+
+	if rrLocalDeb.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for local installer, got %d", rrLocalDeb.Code)
+	}
+	if ct := rrLocalDeb.Header().Get("Content-Type"); ct != "application/vnd.debian.binary-package" {
+		t.Errorf("expected deb Content-Type, got %q", ct)
+	}
 }
