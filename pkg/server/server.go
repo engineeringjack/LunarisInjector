@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/engineeringjack/LunarisInjector/pkg/config"
 	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
 )
 
@@ -238,6 +239,7 @@ func (s *Server) Handler() http.Handler {
 		}
 
 		data := struct {
+			Version       string
 			FileCount     int
 			ModCount      int
 			ConfigCount   int
@@ -248,6 +250,7 @@ func (s *Server) Handler() http.Handler {
 			Files         []manifest.FileEntry
 			ServerPort    int
 		}{
+			Version:       config.Version,
 			FileCount:     len(m.Files),
 			ModCount:      modCount,
 			ConfigCount:   configCount,
@@ -755,7 +758,7 @@ func (s *Server) Handler() http.Handler {
 
     <footer class="footer">
         <p class="footer-name">Jack Frederick</p>
-        <p class="footer-note">This site is home made and self hosted. | <a href="https://csfrederick.com/privacy">Privacy Policy</a></p>
+        <p class="footer-note">This site is home made and self hosted. | Lunaris v{{.Version}} | <a href="https://csfrederick.com/privacy">Privacy Policy</a></p>
     </footer>
 
     <script>

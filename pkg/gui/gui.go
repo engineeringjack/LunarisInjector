@@ -76,7 +76,8 @@ func (s *Server) Handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		_, _ = w.Write([]byte(IndexHTML))
+		content := strings.ReplaceAll(IndexHTML, "{{VERSION}}", config.Version)
+		_, _ = w.Write([]byte(content))
 	})
 
 	// 2. API: Detect Instances
@@ -367,6 +368,44 @@ func (s *Server) Handler() http.Handler {
 			resp["asset_size"] = info.AssetSize
 		}
 		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// 8. API: Apply GitHub update
+	mux.HandleFunc("/api/apply-update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		repo := r.URL.Query().Get("repo")
+		if repo == "" {
+			repo = updater.DefaultGitHubRepo
+		}
+
+		info, hasUpdate, err := updater.CheckUpdate(ctx, repo, config.Version)
+		if err != nil || !hasUpdate || info == nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   "No update available or check failed",
+			})
+			return
+		}
+
+		if err := updater.SelfUpdate(ctx, info.AssetURL, func(format string, args ...interface{}) {}); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":     true,
+			"new_version": info.Version,
+		})
 	})
 
 	// Wrap mux so any incoming HTTP request flags that the client has connected
@@ -1249,7 +1288,15 @@ const IndexHTML = `<!DOCTYPE html>
 
     <footer class="footer">
         <p style="margin:0 0 4px 0; color:var(--text-heading); font-weight:600;">Jack Frederick</p>
-        <p style="margin:0; color:#555;">LunarisInjector Installer | <a href="https://csfrederick.com">csfrederick.com</a></p>
+        <p style="margin:0; color:#888; font-size: 0.88rem;">
+            LunarisInjector <span style="display:inline-block; padding:2px 8px; background:rgba(99,102,241,0.18); color:#a5b4fc; border-radius:4px; font-weight:600; font-family:monospace; margin:0 4px;">v{{VERSION}}</span> | <a href="https://csfrederick.com" target="_blank">csfrederick.com</a>
+        </p>
+        <div style="margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 8px;">
+            <button id="checkUpdateBtn" class="btn-secondary" style="font-size: 0.78rem; padding: 4px 10px; cursor: pointer; border-radius: 5px;" onclick="triggerUpdateCheck()">
+                ↻ Check for Updates
+            </button>
+            <span id="updateBadge" style="font-size: 0.8rem; color: var(--text-muted);"></span>
+        </div>
     </footer>
 
     <script>
@@ -1606,10 +1653,59 @@ const IndexHTML = `<!DOCTYPE html>
                 .replace(/'/g, "&#039;");
         }
 
+        function triggerUpdateCheck() {
+            const btn = document.getElementById('checkUpdateBtn');
+            const badge = document.getElementById('updateBadge');
+            btn.disabled = true;
+            badge.textContent = "Checking...";
+            badge.style.color = "var(--text-muted)";
+
+            fetch('/api/check-update')
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    if (data.error) {
+                        badge.textContent = "Check failed: " + data.error;
+                        badge.style.color = "#f87171";
+                    } else if (data.has_update) {
+                        badge.innerHTML = '<span style="color:#34d399; font-weight:600;">v' + escapeHtml(data.version) + ' available!</span> ' +
+                            '<button class="btn-install" style="padding:3px 8px; font-size:0.75rem; margin-left:6px;" onclick="performApplyUpdate()">Update Now</button>';
+                    } else {
+                        badge.textContent = "Up to date";
+                        badge.style.color = "#34d399";
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    badge.textContent = "Check error";
+                    badge.style.color = "#f87171";
+                });
+        }
+
+        function performApplyUpdate() {
+            const badge = document.getElementById('updateBadge');
+            badge.innerHTML = '<span style="color:#60a5fa;">Downloading & updating binary...</span>';
+            fetch('/api/apply-update', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        badge.innerHTML = '<span style="color:#34d399; font-weight:600;">Updated! Please restart.</span>';
+                        alert("Update installed successfully! The app will now reload.");
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        badge.innerHTML = '<span style="color:#f87171;">Update failed: ' + escapeHtml(data.error || 'unknown') + '</span>';
+                    }
+                })
+                .catch(err => {
+                    badge.innerHTML = '<span style="color:#f87171;">Update error: ' + escapeHtml(err.message) + '</span>';
+                });
+        }
+
         // Initialize on load
         window.addEventListener('DOMContentLoaded', () => {
             loadInstances();
             checkServerStatus();
+            triggerUpdateCheck();
         });
     </script>
 </body>
