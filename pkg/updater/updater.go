@@ -109,8 +109,8 @@ func MatchAsset(assets []GitHubAsset, goos, goarch string) *GitHubAsset {
 	for _, a := range assets {
 		name := strings.ToLower(a.Name)
 
-		// Skip archives (.zip, .tar.gz, .dmg) since self-updater replaces the raw binary
-		if strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".dmg") {
+		// Skip archives (.zip, .tar.gz, .dmg, .deb) since self-updater replaces the raw binary
+		if strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".dmg") || strings.HasSuffix(name, ".deb") {
 			continue
 		}
 

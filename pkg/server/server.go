@@ -692,15 +692,15 @@ func (s *Server) Handler() http.Handler {
                         <strong>Download the Lunaris Installer</strong>
                         <p>Select your operating system:</p>
                         <div class="download-buttons">
-                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.2" class="btn btn-primary" download>Download for Windows (.exe)</a>
-                            <a href="/installers/Lunaris-macOS-AppleSilicon.zip?v=1.0.2" class="btn" download>macOS (Apple Silicon .zip)</a>
-                            <a href="/installers/Lunaris-macOS-Intel.zip?v=1.0.2" class="btn" download>macOS (Intel .zip)</a>
-                            <a href="/installers/lunaris-linux-amd64?v=1.0.2" class="btn" download>Linux (64-bit)</a>
+                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.3" class="btn btn-primary" download>Windows (.exe)</a>
+                            <a href="/installers/Lunaris-macOS.dmg?v=1.0.3" class="btn" download>macOS (.dmg)</a>
+                            <a href="/installers/Lunaris-macOS.zip?v=1.0.3" class="btn" download>macOS (.zip)</a>
+                            <a href="/installers/lunaris_1.0.3_amd64.deb?v=1.0.3" class="btn" download>Linux (.deb)</a>
+                            <a href="/installers/Lunaris-Linux-x86_64.tar.gz?v=1.0.3" class="btn" download>Linux (.tar.gz)</a>
                         </div>
                         <div style="margin-top: 10px; font-size: 0.84rem; color: var(--text-muted); line-height: 1.45;">
-                            <strong>🍎 macOS Quick Start:</strong> Download the <strong>.zip</strong> for your Mac, unzip it, and double-click <strong>Lunaris.app</strong> (or <code>Install-Lunaris-*.command</code>).<br/>
-                            <em>If macOS blocks the app as an unidentified developer:</em> Right-click the app and choose <strong>Open</strong>, or run in Terminal:<br/>
-                            <code style="display:inline-block; margin-top:4px; background:#181822; padding:3px 8px; border-radius:4px; font-family:monospace; color:#a5b4fc;">xattr -cr ~/Downloads/Lunaris* && open ~/Downloads/Lunaris*.app</code>
+                            <strong>🍎 macOS:</strong> Download <strong>Lunaris-macOS.dmg</strong>, double-click to open, and launch <strong>Lunaris.app</strong> (or drag to Applications).<br/>
+                            <strong>🐧 Linux:</strong> Ubuntu/Debian users: double-click the <strong>.deb</strong> to install via App Center. Other distros: extract the <strong>.tar.gz</strong> and double-click <code>install.sh</code>.
                         </div>
                     </div>
                 </div>
@@ -813,6 +813,15 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 
 	info, err := os.Stat(fullPath)
 	if err != nil || info.IsDir() {
+		// Smart fallback for installer downloads:
+		// If requested from /installers/ and file does not exist locally,
+		// redirect directly to the latest GitHub Release asset download!
+		if strings.HasPrefix(cleanRel, "installers") {
+			filename := filepath.Base(cleanRel)
+			ghURL := fmt.Sprintf("https://github.com/engineeringjack/LunarisInjector/releases/latest/download/%s", filename)
+			http.Redirect(w, r, ghURL, http.StatusTemporaryRedirect)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -828,6 +837,12 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/zip")
 		} else if strings.HasSuffix(filename, ".exe") {
 			w.Header().Set("Content-Type", "application/vnd.microsoft.portable-executable")
+		} else if strings.HasSuffix(filename, ".dmg") {
+			w.Header().Set("Content-Type", "application/x-apple-diskimage")
+		} else if strings.HasSuffix(filename, ".deb") {
+			w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
+		} else if strings.HasSuffix(filename, ".tar.gz") {
+			w.Header().Set("Content-Type", "application/gzip")
 		} else {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
