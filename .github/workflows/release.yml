@@ -121,31 +121,36 @@ jobs:
           </plist>
           EOF
 
-          # Ad-hoc code sign the bundle
-          codesign --force --deep --sign - dist/Lunaris.app || true
+          # 6. Ad-hoc code sign the executable, bundle, and verify
+          xattr -cr dist/Lunaris.app
+          codesign --force --sign - dist/Lunaris.app/Contents/MacOS/lunaris
+          codesign --force --deep --sign - dist/Lunaris.app
+          echo "Verifying code signature:"
+          codesign --verify --deep --strict --verbose=2 dist/Lunaris.app
 
-          # Create Universal ZIP archive (preserving symlinks and permissions)
+          # 7. Create Universal ZIP archive (preserving symlinks and permissions)
           (cd dist && zip -r -y Lunaris-macOS.zip Lunaris.app)
           cp dist/Lunaris-macOS.zip dist/Lunaris-macOS-AppleSilicon.zip
           cp dist/Lunaris-macOS.zip dist/Lunaris-macOS-Intel.zip
 
-          # Prepare DMG staging directory
+          # 8. Prepare DMG staging directory
           mkdir -p dist/dmg_staging
           cp -R dist/Lunaris.app dist/dmg_staging/
           ln -s /Applications dist/dmg_staging/Applications
 
-          cat << 'EOF' > dist/dmg_staging/Install-Lunaris-If-Blocked.command
-          #!/bin/bash
-          cd "$(dirname "$0")"
-          echo "Bypassing Gatekeeper quarantine for Lunaris..."
-          xattr -cr Lunaris.app 2>/dev/null || true
-          chmod +x Lunaris.app/Contents/MacOS/lunaris 2>/dev/null || true
-          open Lunaris.app
-          EOF
-          chmod +x dist/dmg_staging/Install-Lunaris-If-Blocked.command
+          cat << 'EOF' > dist/dmg_staging/Open-Lunaris.command
+#!/bin/bash
+cd "$(dirname "$0")"
+echo "Starting Lunaris..."
+xattr -cr Lunaris.app 2>/dev/null || true
+chmod +x Lunaris.app/Contents/MacOS/lunaris 2>/dev/null || true
+open Lunaris.app
+EOF
+          chmod +x dist/dmg_staging/Open-Lunaris.command
 
-          # Create native macOS Disk Image (.dmg)
+          # 9. Create native macOS Disk Image (.dmg) and ad-hoc sign it
           hdiutil create -volname "Lunaris" -srcfolder dist/dmg_staging -ov -format UDZO dist/Lunaris-macOS.dmg
+          codesign --force --sign - dist/Lunaris-macOS.dmg
           rm -rf dist/dmg_staging
 
       - name: Publish macOS Release Assets
