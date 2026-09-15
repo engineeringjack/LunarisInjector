@@ -14,6 +14,7 @@ import (
 
 	"github.com/engineeringjack/LunarisInjector/pkg/config"
 	"github.com/engineeringjack/LunarisInjector/pkg/installer"
+	"github.com/engineeringjack/LunarisInjector/pkg/logger"
 	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
 	"github.com/engineeringjack/LunarisInjector/pkg/syncer"
 	"github.com/engineeringjack/LunarisInjector/pkg/updater"
@@ -169,6 +170,20 @@ func (s *Server) Handler() http.Handler {
 		selfExe, _ := os.Executable()
 		selfExe, _ = filepath.Abs(selfExe)
 
+		instLogger, _ := logger.New(logger.Options{
+			TargetDir: req.InstancePath,
+			Version:   config.Version,
+		})
+		if instLogger != nil {
+			defer instLogger.Close()
+			instLogger.Infof("[Lunaris GUI] Installation requested for instance: %s", req.InstancePath)
+		}
+
+		var installLogFn func(string, ...interface{})
+		if instLogger != nil {
+			installLogFn = instLogger.AsFunc()
+		}
+
 		err := installer.Install(installer.InstallConfig{
 			InstanceDir:         req.InstancePath,
 			ServerURL:           serverURL,
@@ -177,15 +192,23 @@ func (s *Server) Handler() http.Handler {
 			HookCurseForge:      req.HookCurseForge,
 			EnableVR:            req.EnableVR,
 			RequiredGameVersion: "1.20.1",
+			Logger:              installLogFn,
 		})
 
 		if err != nil {
+			if instLogger != nil {
+				instLogger.Errorf("[Lunaris GUI] Installation failed: %v", err)
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
 				"error":   err.Error(),
 			})
 			return
+		}
+
+		if instLogger != nil {
+			instLogger.Infof("[Lunaris GUI] Installation completed successfully for: %s", req.InstancePath)
 		}
 
 		// Find hooked runtimes for feedback
@@ -232,7 +255,71 @@ func (s *Server) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(respData)
 	})
 
-	// 5. API: Heartbeat ping
+	// 5. API: Execute Resync & Reset to Server Pack
+	mux.HandleFunc("/api/resync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var req struct {
+			InstancePath string `json:"instance_path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.InstancePath == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   "Please select or specify a Minecraft instance directory",
+			})
+			return
+		}
+
+		instLogger, _ := logger.New(logger.Options{
+			TargetDir: req.InstancePath,
+			Version:   config.Version,
+		})
+		if instLogger != nil {
+			defer instLogger.Close()
+			instLogger.Infof("[Lunaris GUI] Resync requested for instance: %s", req.InstancePath)
+		}
+
+		var resyncLogFn func(string, ...interface{})
+		if instLogger != nil {
+			resyncLogFn = instLogger.AsFunc()
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		if err := syncer.Resync(ctx, syncer.ResyncOptions{
+			InstanceDir: req.InstancePath,
+			WorkerCount: 4,
+			Logger:      resyncLogFn,
+		}); err != nil {
+			if instLogger != nil {
+				instLogger.Errorf("[Lunaris GUI] Resync failed: %v", err)
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		if instLogger != nil {
+			instLogger.Infof("[Lunaris GUI] Resync completed successfully for: %s", req.InstancePath)
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":       true,
+			"instance_path": req.InstancePath,
+			"message":       "Instance successfully resynced to server pack! All custom modifications have been removed.",
+		})
+	})
+
+	// 6. API: Heartbeat ping
 	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.lastPing = time.Now()
@@ -1044,6 +1131,19 @@ const IndexHTML = `<!DOCTYPE html>
                     </div>
                 </div>
 
+                <div id="hookedInstanceBanner" style="display:none; margin-top:12px; padding:12px 14px; background:rgba(99, 102, 241, 0.12); border:1px solid rgba(99, 102, 241, 0.35); border-radius:6px; color:#c7d2fe; font-size:0.86rem; line-height:1.45;">
+                    <div style="font-weight:600; margin-bottom:6px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                        <span>✦ Instance is Hooked & Managed by Lunaris</span>
+                        <button id="btnResync" type="button" class="btn-secondary" style="background:#1e1e2d; border-color:#6366f1; color:#e0e7ff; padding:5px 12px; font-size:0.8rem;" onclick="submitResync()">
+                            <span id="resyncSpinner" class="spinner" style="width:12px; height:12px; margin-right:4px;"></span>
+                            <span id="resyncBtnText">↺ Resync & Match Server</span>
+                        </button>
+                    </div>
+                    <div>
+                        Need to reset custom mods or local edits? Resyncing will forget all custom modifications and restore this instance to match the server pack 100%.
+                    </div>
+                </div>
+
                 <div class="custom-path-card">
                     <label style="font-size:0.84rem; color:var(--text-muted); cursor:pointer;">
                         <input type="radio" name="instanceRadio" value="__custom__" id="radioCustom" style="vertical-align:middle; margin-right:6px; accent-color:#6366f1;">
@@ -1280,13 +1380,23 @@ const IndexHTML = `<!DOCTYPE html>
         function updateModsWarning(inst) {
             const warnBox = document.getElementById('existingModsWarning');
             const warnText = document.getElementById('existingModsWarningText');
-            if (!warnBox || !warnText) return;
+            const hookBox = document.getElementById('hookedInstanceBanner');
 
-            if (inst && inst.mod_count > 0 && !inst.is_injected) {
-                warnBox.style.display = "block";
-                warnText.innerHTML = "This instance already contains <strong>" + inst.mod_count + " mod file(s)</strong> in its 'mods/' folder. Installing LunarisInjector will synchronize your files with the server, which will <strong>OVERWRITE or DELETE</strong> any existing mods that are not part of the remote modpack.";
-            } else {
-                warnBox.style.display = "none";
+            if (warnBox && warnText) {
+                if (inst && inst.mod_count > 0 && !inst.is_injected) {
+                    warnBox.style.display = "block";
+                    warnText.innerHTML = "This instance already contains <strong>" + inst.mod_count + " mod file(s)</strong> in its 'mods/' folder. Installing LunarisInjector will synchronize your files with the server, which will <strong>OVERWRITE or DELETE</strong> any existing mods that are not part of the remote modpack.";
+                } else {
+                    warnBox.style.display = "none";
+                }
+            }
+
+            if (hookBox) {
+                if (inst && inst.is_injected) {
+                    hookBox.style.display = "block";
+                } else {
+                    hookBox.style.display = "none";
+                }
             }
         }
 
@@ -1408,6 +1518,62 @@ const IndexHTML = `<!DOCTYPE html>
                 spinner.style.display = "none";
                 btnText.textContent = "Install & Hook CurseForge";
                 showError("Network communication error: " + err.message);
+            });
+        }
+
+        function submitResync() {
+            let path = selectedPath;
+            if (document.getElementById('radioCustom').checked) {
+                path = document.getElementById('customPathInput').value.trim();
+            }
+
+            if (!path) {
+                showError("Please select an instance to resync.");
+                return;
+            }
+
+            const confirmed = confirm(
+                "↺ RESYNC & FORGET ALL MODIFICATIONS\n\n" +
+                "Are you sure you want to resync this instance to match the server pack 100%?\n\n" +
+                "This will forget all custom mod approvals, delete any untracked client-side mods, restore missing pack mods, and reset modified configs to match the server.\n\n" +
+                "Do you want to proceed?"
+            );
+            if (!confirmed) return;
+
+            const btn = document.getElementById('btnResync');
+            const spinner = document.getElementById('resyncSpinner');
+            const btnText = document.getElementById('resyncBtnText');
+            const errBanner = document.getElementById('errorBanner');
+            errBanner.style.display = "none";
+
+            btn.disabled = true;
+            spinner.style.display = "inline-block";
+            btnText.textContent = "Resyncing...";
+
+            fetch('/api/resync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ instance_path: path })
+            })
+            .then(r => r.json().then(data => ({ status: r.status, body: data })))
+            .then(({ status, body }) => {
+                btn.disabled = false;
+                spinner.style.display = "none";
+                btnText.textContent = "↺ Resync & Match Server";
+
+                if (status !== 200 || !body.success) {
+                    showError(body.error || "Resync failed.");
+                    return;
+                }
+
+                alert("✔ " + (body.message || "Instance successfully resynced to match server!"));
+                loadInstances();
+            })
+            .catch(err => {
+                btn.disabled = false;
+                spinner.style.display = "none";
+                btnText.textContent = "↺ Resync & Match Server";
+                showError("Resync network error: " + err.message);
             });
         }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/engineeringjack/LunarisInjector/pkg/config"
 	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/modtracker"
 )
 
 func TestSyncerDiffAndSync(t *testing.T) {
@@ -226,4 +227,110 @@ func TestSyncerOptionalVR(t *testing.T) {
 		t.Errorf("vivecraft content mismatch: got %q, want %q", string(downloadedVR), string(vrContent))
 	}
 }
+
+func TestSyncerUserRules(t *testing.T) {
+	// Remote server has:
+	// - mods/server-mod.jar
+	// - mods/troublesome.jar
+	// - config/pack-config.json
+	remoteServerMod := []byte("server mod")
+	remoteTroublesome := []byte("troublesome mod")
+	remoteConfig := []byte("pack config original")
+
+	hMod := sha256.Sum256(remoteServerMod)
+	hTrouble := sha256.Sum256(remoteTroublesome)
+	hCfg := sha256.Sum256(remoteConfig)
+
+	m := manifest.Manifest{
+		Version: 1,
+		Files: []manifest.FileEntry{
+			{Path: "mods/server-mod.jar", SHA256: hex.EncodeToString(hMod[:]), Size: int64(len(remoteServerMod))},
+			{Path: "mods/troublesome.jar", SHA256: hex.EncodeToString(hTrouble[:]), Size: int64(len(remoteTroublesome))},
+			{Path: "config/pack-config.json", SHA256: hex.EncodeToString(hCfg[:]), Size: int64(len(remoteConfig))},
+		},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/manifest.json":
+			_ = json.NewEncoder(w).Encode(m)
+		case "/mods/server-mod.jar":
+			_, _ = w.Write(remoteServerMod)
+		case "/mods/troublesome.jar":
+			_, _ = w.Write(remoteTroublesome)
+		case "/config/pack-config.json":
+			_, _ = w.Write(remoteConfig)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	// Client has:
+	// - mods/custom-client.jar (User added mod!)
+	// - config/pack-config.json (User edited locally!)
+	// And client intentionally DOES NOT have mods/troublesome.jar (User removed it!)
+	tmpGameDir := t.TempDir()
+	modsDir := filepath.Join(tmpGameDir, "mods")
+	cfgDir := filepath.Join(tmpGameDir, "config")
+	_ = os.MkdirAll(modsDir, 0755)
+	_ = os.MkdirAll(cfgDir, 0755)
+
+	customClientPath := filepath.Join(modsDir, "custom-client.jar")
+	_ = os.WriteFile(customClientPath, []byte("my client mod"), 0644)
+
+	localConfigPath := filepath.Join(cfgDir, "pack-config.json")
+	localConfigContent := []byte("pack config edited by user")
+	_ = os.WriteFile(localConfigPath, localConfigContent, 0644)
+	hLocalCfg := sha256.Sum256(localConfigContent)
+
+	cfg := config.DefaultConfig()
+	cfg.ServerURL = ts.URL
+	cfg.SyncDirs = []string{"mods", "config"}
+	cfg.DeleteExtra = true
+
+	userRules := &modtracker.UserRules{
+		KeepAdded:    map[string]bool{"mods/custom-client.jar": true},
+		KeepRemoved:  map[string]bool{"mods/troublesome.jar": true},
+		KeepModified: map[string]string{"config/pack-config.json": hex.EncodeToString(hLocalCfg[:])},
+	}
+
+	s := New(SyncOptions{
+		Config:      cfg,
+		GameDir:     tmpGameDir,
+		WorkerCount: 2,
+		Logger:      func(format string, args ...interface{}) {},
+		UserRules:   userRules,
+	})
+
+	// Run Sync
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	// 1. Verify custom client mod was NOT deleted
+	if _, err := os.Stat(customClientPath); err != nil {
+		t.Errorf("expected custom-client.jar to be preserved, but got error: %v", err)
+	}
+
+	// 2. Verify troublesome mod was NOT downloaded
+	if _, err := os.Stat(filepath.Join(modsDir, "troublesome.jar")); !os.IsNotExist(err) {
+		t.Errorf("expected troublesome.jar to remain removed, but it was downloaded!")
+	}
+
+	// 3. Verify server-mod.jar was downloaded normally
+	if _, err := os.Stat(filepath.Join(modsDir, "server-mod.jar")); err != nil {
+		t.Errorf("expected server-mod.jar to be downloaded: %v", err)
+	}
+
+	// 4. Verify pack-config.json was NOT overwritten by server
+	dataCfg, err := os.ReadFile(localConfigPath)
+	if err != nil {
+		t.Fatalf("failed to read local config: %v", err)
+	}
+	if string(dataCfg) != string(localConfigContent) {
+		t.Errorf("pack-config.json was overwritten by server! got %q, want %q", string(dataCfg), string(localConfigContent))
+	}
+}
+
 

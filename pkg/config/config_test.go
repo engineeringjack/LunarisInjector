@@ -37,6 +37,13 @@ func TestConfigLoadSave(t *testing.T) {
 	if len(loaded.IgnoreFiles) != 1 {
 		t.Errorf("expected 1 ignore file, got %d", len(loaded.IgnoreFiles))
 	}
+
+	cfg.LogFile = "custom.log"
+	_ = cfg.Save(cfgPath)
+	loadedWithLog, _ := Load(cfgPath)
+	if loadedWithLog.LogFile != "custom.log" {
+		t.Errorf("expected LogFile custom.log, got %s", loadedWithLog.LogFile)
+	}
 }
 
 func TestFindInstanceConfig(t *testing.T) {

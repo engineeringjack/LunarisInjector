@@ -9,7 +9,7 @@ import (
 
 const ConfigFileName = "lunaris.json"
 const DefaultServerURL = "https://lunaris.csfrederick.com"
-var Version = "1.0.1"
+var Version = "1.0.2"
 
 // Config contains the configuration settings for LunarisInjector.
 type Config struct {
@@ -45,6 +45,9 @@ type Config struct {
 
 	// GitHubRepo specifies the GitHub repository for auto-updates (default: "engineeringjack/LunarisInjector").
 	GitHubRepo string `json:"github_repo,omitempty"`
+
+	// LogFile specifies an optional custom path or filename for action logs (defaults to "lunaris.log").
+	LogFile string `json:"log_file,omitempty"`
 }
 
 // DefaultSyncDirs defines the default directories synchronized between server and client.

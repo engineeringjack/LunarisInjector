@@ -692,10 +692,15 @@ func (s *Server) Handler() http.Handler {
                         <strong>Download the Lunaris Installer</strong>
                         <p>Select your operating system:</p>
                         <div class="download-buttons">
-                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.1" class="btn btn-primary" download>Download for Windows (.exe)</a>
-                            <a href="/installers/lunaris-linux-amd64?v=1.0.1" class="btn" download>Download for Linux (64-bit)</a>
-                            <a href="/installers/lunaris-darwin-arm64?v=1.0.1" class="btn" download>macOS (Apple Silicon)</a>
-                            <a href="/installers/lunaris-darwin-amd64?v=1.0.1" class="btn" download>macOS (Intel)</a>
+                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.2" class="btn btn-primary" download>Download for Windows (.exe)</a>
+                            <a href="/installers/Lunaris-macOS-AppleSilicon.zip?v=1.0.2" class="btn" download>macOS (Apple Silicon .zip)</a>
+                            <a href="/installers/Lunaris-macOS-Intel.zip?v=1.0.2" class="btn" download>macOS (Intel .zip)</a>
+                            <a href="/installers/lunaris-linux-amd64?v=1.0.2" class="btn" download>Linux (64-bit)</a>
+                        </div>
+                        <div style="margin-top: 10px; font-size: 0.84rem; color: var(--text-muted); line-height: 1.45;">
+                            <strong>🍎 macOS Quick Start:</strong> Download the <strong>.zip</strong> for your Mac, unzip it, and double-click <strong>Lunaris.app</strong> (or <code>Install-Lunaris-*.command</code>).<br/>
+                            <em>If macOS blocks the app as an unidentified developer:</em> Right-click the app and choose <strong>Open</strong>, or run in Terminal:<br/>
+                            <code style="display:inline-block; margin-top:4px; background:#181822; padding:3px 8px; border-radius:4px; font-family:monospace; color:#a5b4fc;">xattr -cr ~/Downloads/Lunaris* && open ~/Downloads/Lunaris*.app</code>
                         </div>
                     </div>
                 </div>
@@ -817,6 +822,15 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
+		filename := filepath.Base(cleanRel)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		if strings.HasSuffix(filename, ".zip") {
+			w.Header().Set("Content-Type", "application/zip")
+		} else if strings.HasSuffix(filename, ".exe") {
+			w.Header().Set("Content-Type", "application/vnd.microsoft.portable-executable")
+		} else {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
 	http.ServeFile(w, r, fullPath)
 }

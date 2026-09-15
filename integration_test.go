@@ -5,12 +5,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/engineeringjack/LunarisInjector/pkg/config"
 	"github.com/engineeringjack/LunarisInjector/pkg/installer"
+	"github.com/engineeringjack/LunarisInjector/pkg/logger"
 	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/modtracker"
 	"github.com/engineeringjack/LunarisInjector/pkg/server"
 	"github.com/engineeringjack/LunarisInjector/pkg/syncer"
 )
@@ -239,4 +242,336 @@ func TestMultiDirSyncWithConfigsAndPacks(t *testing.T) {
 		t.Errorf("expected embeddium-fingerprint.json to be preserved: %v", err)
 	}
 }
+
+func TestLoggingEndToEndAndOverwrite(t *testing.T) {
+	// 1. Setup server
+	serverDir := t.TempDir()
+	serverMods := filepath.Join(serverDir, "mods")
+	_ = os.MkdirAll(serverMods, 0755)
+	_ = os.WriteFile(filepath.Join(serverMods, "mod-alpha.jar"), []byte("alpha content"), 0644)
+
+	srv := server.New(server.ServerOptions{
+		RootDir:  serverDir,
+		SyncDirs: []string{"mods"},
+		Port:     18090,
+		Host:     "127.0.0.1",
+	})
+	httpServer := &http.Server{
+		Addr:    "127.0.0.1:18090",
+		Handler: srv.Handler(),
+	}
+	go func() {
+		_ = httpServer.ListenAndServe()
+	}()
+	defer httpServer.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// 2. Setup client instance
+	clientDir := t.TempDir()
+	logFilePrimary := filepath.Join(clientDir, logger.DefaultLogFileName)
+	logFileSecondary := filepath.Join(clientDir, logger.LogsDirName, logger.DefaultLogFileName)
+
+	// RUN 1: Installation and Initial Sync
+	logFiles, err := logger.Init(clientDir, logger.Options{
+		QuietConsole: true,
+		Version:      "1.0.1",
+		Args:         []string{"install", "--instance", clientDir},
+	})
+	if err != nil {
+		t.Fatalf("logger.Init failed: %v", err)
+	}
+	if len(logFiles) != 2 {
+		t.Errorf("expected 2 log files (root and logs/), got: %v", logFiles)
+	}
+
+	err = installer.Install(installer.InstallConfig{
+		InstanceDir: clientDir,
+		ServerURL:   "http://127.0.0.1:18090",
+		Logger:      logger.AsFunc(),
+	})
+	if err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	cfg, _, err := config.FindInstanceConfig(clientDir)
+	if err != nil {
+		t.Fatalf("FindInstanceConfig failed: %v", err)
+	}
+
+	s := syncer.New(syncer.SyncOptions{
+		Config:      cfg,
+		GameDir:     clientDir,
+		WorkerCount: 2,
+		Logger:      logger.AsFunc(),
+	})
+
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	_ = logger.Close()
+
+	// Verify Run 1 log contents
+	data1, err := os.ReadFile(logFilePrimary)
+	if err != nil {
+		t.Fatalf("failed to read primary log: %v", err)
+	}
+	logStr1 := string(data1)
+	if !strings.Contains(logStr1, "[Installer] Starting installation for instance:") {
+		t.Errorf("Log missing installer start: %s", logStr1)
+	}
+	if !strings.Contains(logStr1, "[Installer] Saved configuration") {
+		t.Errorf("Log missing config save: %s", logStr1)
+	}
+	if !strings.Contains(logStr1, "[Lunaris] Checking sync server:") {
+		t.Errorf("Log missing sync server check: %s", logStr1)
+	}
+	if !strings.Contains(logStr1, "[Lunaris] Verified and installed: mods/mod-alpha.jar") {
+		t.Errorf("Log missing download verification: %s", logStr1)
+	}
+
+	// Verify secondary log file in logs/
+	data1Sec, err := os.ReadFile(logFileSecondary)
+	if err != nil {
+		t.Fatalf("failed to read secondary log: %v", err)
+	}
+	if !strings.Contains(string(data1Sec), "[Lunaris] Verified and installed: mods/mod-alpha.jar") {
+		t.Errorf("Secondary log missing action: %s", string(data1Sec))
+	}
+
+	// RUN 2: Next run MUST overwrite or remove the last run with the current one!
+	_, err = logger.Init(clientDir, logger.Options{
+		QuietConsole: true,
+		Version:      "1.0.1",
+		Args:         []string{"--gameDir", clientDir},
+	})
+	if err != nil {
+		t.Fatalf("logger.Init (Run 2) failed: %v", err)
+	}
+
+	logger.Infof("[Lunaris] Run 2 pre-launch sync starting")
+	// Second sync (already up-to-date)
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync run 2 failed: %v", err)
+	}
+	logger.Infof("[Lunaris] Run 2 completed successfully")
+	_ = logger.Close()
+
+	// Verify Run 2 log contents
+	data2, err := os.ReadFile(logFilePrimary)
+	if err != nil {
+		t.Fatalf("failed to read primary log after Run 2: %v", err)
+	}
+	logStr2 := string(data2)
+
+	// Must contain Run 2 actions
+	if !strings.Contains(logStr2, "[Lunaris] Run 2 pre-launch sync starting") {
+		t.Errorf("Run 2 log missing Run 2 start: %s", logStr2)
+	}
+	if !strings.Contains(logStr2, "[Lunaris] Everything is up to date!") {
+		t.Errorf("Run 2 log missing up-to-date message: %s", logStr2)
+	}
+	if !strings.Contains(logStr2, "[Lunaris] Run 2 completed successfully") {
+		t.Errorf("Run 2 log missing Run 2 completion: %s", logStr2)
+	}
+
+	// Must NOT contain Run 1 actions (they were overwritten/removed)
+	if strings.Contains(logStr2, "[Installer] Starting installation for instance:") {
+		t.Errorf("Log was not overwritten! Still contains Run 1 install action: %s", logStr2)
+	}
+	if strings.Contains(logStr2, "mods/mod-alpha.jar (1/1)") {
+		t.Errorf("Log was not overwritten! Still contains Run 1 download action: %s", logStr2)
+	}
+}
+
+func TestModTrackerAndResyncEndToEnd(t *testing.T) {
+	// 1. Setup Server Directory with official server pack
+	serverDir := t.TempDir()
+	serverMods := filepath.Join(serverDir, "mods")
+	serverConfig := filepath.Join(serverDir, "config")
+	_ = os.MkdirAll(serverMods, 0755)
+	_ = os.MkdirAll(serverConfig, 0755)
+
+	serverCoreContent := []byte("official-server-core-mod-v1.0")
+	troubleModContent := []byte("troublesome-mod-content")
+	origConfigContent := []byte(`{"fov": 70, "difficulty": "hard"}`)
+
+	_ = os.WriteFile(filepath.Join(serverMods, "server-core.jar"), serverCoreContent, 0644)
+	_ = os.WriteFile(filepath.Join(serverMods, "troublesome-mod.jar"), troubleModContent, 0644)
+	_ = os.WriteFile(filepath.Join(serverConfig, "server-options.json"), origConfigContent, 0644)
+
+	srv := server.New(server.ServerOptions{
+		RootDir:  serverDir,
+		SyncDirs: []string{"mods", "config"},
+		Port:     18091,
+		Host:     "127.0.0.1",
+	})
+
+	httpServer := &http.Server{
+		Addr:    "127.0.0.1:18091",
+		Handler: srv.Handler(),
+	}
+	go func() {
+		_ = httpServer.ListenAndServe()
+	}()
+	defer httpServer.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// 2. Setup Client Directory
+	clientDir := t.TempDir()
+	err := installer.Install(installer.InstallConfig{
+		InstanceDir: clientDir,
+		ServerURL:   "http://127.0.0.1:18091",
+	})
+	if err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	cfg, _, err := config.FindInstanceConfig(clientDir)
+	if err != nil {
+		t.Fatalf("FindInstanceConfig failed: %v", err)
+	}
+
+	// 3. FIRST RUN: Establish initial baseline without prompting
+	// Baseline state file should NOT exist yet
+	if modtracker.HasBaseline(clientDir) {
+		t.Fatalf("Baseline file should not exist before first run")
+	}
+
+	s := syncer.New(syncer.SyncOptions{
+		Config:      cfg,
+		GameDir:     clientDir,
+		WorkerCount: 2,
+		Logger:      func(string, ...interface{}) {},
+	})
+
+	ctx := context.Background()
+	remoteM, err := s.FetchRemoteManifest(ctx)
+	if err != nil {
+		t.Fatalf("FetchRemoteManifest failed: %v", err)
+	}
+
+	if err := s.SyncWithManifest(ctx, remoteM); err != nil {
+		t.Fatalf("Initial sync failed: %v", err)
+	}
+
+	remoteMap := remoteM.FilteredMap(nil)
+	_, err = modtracker.CreateInitialBaseline(clientDir, remoteMap)
+	if err != nil {
+		t.Fatalf("CreateInitialBaseline failed: %v", err)
+	}
+
+	if !modtracker.HasBaseline(clientDir) {
+		t.Fatalf("Baseline state file was not created")
+	}
+
+	// 4. USER MODIFICATIONS between launches:
+	// A: User installs custom client-side mod
+	customModPath := filepath.Join(clientDir, "mods", "client-minimap.jar")
+	customModContent := []byte("client-side-minimap-mod")
+	if err := os.WriteFile(customModPath, customModContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// B: User removes troublesome server mod for themselves
+	troubleModPath := filepath.Join(clientDir, "mods", "troublesome-mod.jar")
+	if err := os.Remove(troubleModPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// C: User modifies config file
+	clientCfgPath := filepath.Join(clientDir, "config", "server-options.json")
+	userModifiedConfig := []byte(`{"fov": 95, "difficulty": "hard"}`)
+	if err := os.WriteFile(clientCfgPath, userModifiedConfig, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 5. SECOND RUN: Detect changes and prompt user
+	loadedState, err := modtracker.LoadState(clientDir)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+
+	changes, err := modtracker.DetectChanges(clientDir, loadedState, remoteMap, cfg.SyncDirs, cfg.IgnoreFiles)
+	if err != nil {
+		t.Fatalf("DetectChanges failed: %v", err)
+	}
+
+	if len(changes) != 3 {
+		t.Fatalf("Expected 3 detected changes, got %d: %+v", len(changes), changes)
+	}
+
+	// User decides to KEEP all modifications on top of pack
+	decisions := map[string]modtracker.UserDecision{
+		"mods/client-minimap.jar":    modtracker.DecisionKeep,
+		"mods/troublesome-mod.jar":   modtracker.DecisionKeep,
+		"config/server-options.json": modtracker.DecisionKeep,
+	}
+
+	if err := modtracker.ApplyDecisions(clientDir, loadedState, decisions, changes); err != nil {
+		t.Fatalf("ApplyDecisions failed: %v", err)
+	}
+
+	// Apply decisions in syncer and execute sync
+	s.SetUserRules(&loadedState.UserRules)
+	if err := s.SyncWithManifest(ctx, remoteM); err != nil {
+		t.Fatalf("Second sync failed: %v", err)
+	}
+
+	// Assertions after second sync:
+	// - Custom minimap must still exist (not deleted as extra)
+	if _, err := os.Stat(customModPath); os.IsNotExist(err) {
+		t.Errorf("Expected custom mod client-minimap.jar to be kept, but was deleted")
+	}
+	// - Troublesome mod must NOT be re-downloaded
+	if _, err := os.Stat(troubleModPath); !os.IsNotExist(err) {
+		t.Errorf("Expected troublesome-mod.jar to remain removed, but was re-downloaded")
+	}
+	// - Modified config must preserve user's changes
+	cfgData, _ := os.ReadFile(clientCfgPath)
+	if string(cfgData) != string(userModifiedConfig) {
+		t.Errorf("Expected user config edits to be kept, got: %s", string(cfgData))
+	}
+
+	// 6. THIRD RUN: No new changes made! User must NOT be prompted again
+	reloadedState, _ := modtracker.LoadState(clientDir)
+	changesRun3, err := modtracker.DetectChanges(clientDir, reloadedState, remoteMap, cfg.SyncDirs, cfg.IgnoreFiles)
+	if err != nil {
+		t.Fatalf("DetectChanges Run 3 failed: %v", err)
+	}
+	if len(changesRun3) != 0 {
+		t.Fatalf("Expected 0 unapproved changes on Run 3 (no prompt!), got %d: %+v", len(changesRun3), changesRun3)
+	}
+
+	// 7. USER CHOOSES RESYNC (Forget all modifications and match server pack 100%)
+	if err := syncer.Resync(context.Background(), syncer.ResyncOptions{
+		InstanceDir: clientDir,
+		WorkerCount: 2,
+	}); err != nil {
+		t.Fatalf("syncer.Resync failed: %v", err)
+	}
+
+	// Assertions after Resync:
+	// - Custom minimap MUST be deleted
+	if _, err := os.Stat(customModPath); !os.IsNotExist(err) {
+		t.Errorf("Expected custom mod client-minimap.jar to be deleted after resync")
+	}
+	// - Troublesome mod MUST be restored from server
+	if _, err := os.Stat(troubleModPath); os.IsNotExist(err) {
+		t.Errorf("Expected troublesome-mod.jar to be restored after resync")
+	}
+	// - Config MUST be restored to original server pack content
+	resyncedCfgData, _ := os.ReadFile(clientCfgPath)
+	if string(resyncedCfgData) != string(origConfigContent) {
+		t.Errorf("Expected config to be restored to server content, got: %s", string(resyncedCfgData))
+	}
+
+	// - User rules in state must be empty
+	finalState, _ := modtracker.LoadState(clientDir)
+	if len(finalState.UserRules.KeepAdded) != 0 || len(finalState.UserRules.KeepRemoved) != 0 || len(finalState.UserRules.KeepModified) != 0 {
+		t.Errorf("Expected all user rules to be wiped after resync, got: %+v", finalState.UserRules)
+	}
+}
+
 

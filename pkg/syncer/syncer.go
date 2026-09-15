@@ -18,6 +18,7 @@ import (
 
 	"github.com/engineeringjack/LunarisInjector/pkg/config"
 	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/modtracker"
 )
 
 var ErrOfflineProceed = errors.New("remote server unreachable, launching offline")
@@ -32,6 +33,7 @@ type SyncOptions struct {
 	WorkerCount int
 	OnProgress  ProgressCallback
 	Logger      func(format string, args ...interface{})
+	UserRules   *modtracker.UserRules
 }
 
 // Syncer handles comparing and synchronizing local game directories against a remote manifest.
@@ -133,7 +135,21 @@ func (s *Syncer) CalculatePlan(remote *manifest.Manifest) (*Plan, error) {
 	// Determine files to download (new or changed)
 	for path, remoteEntry := range remoteMap {
 		localEntry, exists := localMap[path]
-		if !exists || !strings.EqualFold(localEntry.SHA256, remoteEntry.SHA256) {
+		if !exists {
+			// Check if user specifically opted to keep this server pack mod removed
+			if s.opts.UserRules != nil && s.opts.UserRules.IsKeepRemoved(path) {
+				s.opts.Logger("[Lunaris] Preserving user removal of: %s", path)
+				continue
+			}
+			plan.Downloads = append(plan.Downloads, remoteEntry)
+			plan.TotalBytes += remoteEntry.Size
+		} else if !strings.EqualFold(localEntry.SHA256, remoteEntry.SHA256) {
+			// Check if user opted to keep their custom modified version
+			if s.opts.UserRules != nil && s.opts.UserRules.IsKeepModified(path, localEntry.SHA256) {
+				s.opts.Logger("[Lunaris] Preserving user-modified file: %s", path)
+				plan.Unchanged++
+				continue
+			}
 			plan.Downloads = append(plan.Downloads, remoteEntry)
 			plan.TotalBytes += remoteEntry.Size
 		} else {
@@ -147,6 +163,11 @@ func (s *Syncer) CalculatePlan(remote *manifest.Manifest) (*Plan, error) {
 			if manifest.ShouldIgnore(path, s.opts.Config.IgnoreFiles) {
 				continue
 			}
+			// Check if user specifically opted to keep this custom added file on top of the pack
+			if s.opts.UserRules != nil && s.opts.UserRules.IsKeepAdded(path) {
+				s.opts.Logger("[Lunaris] Preserving custom client mod: %s", path)
+				continue
+			}
 			if _, exists := remoteMap[path]; !exists {
 				plan.Deletions = append(plan.Deletions, path)
 			}
@@ -156,7 +177,12 @@ func (s *Syncer) CalculatePlan(remote *manifest.Manifest) (*Plan, error) {
 	return plan, nil
 }
 
-// Sync performs the synchronization process.
+// SetUserRules updates the user rules used during synchronization.
+func (s *Syncer) SetUserRules(rules *modtracker.UserRules) {
+	s.opts.UserRules = rules
+}
+
+// Sync performs the synchronization process by fetching the remote manifest and synchronizing.
 func (s *Syncer) Sync(ctx context.Context) error {
 	remoteManifest, err := s.FetchRemoteManifest(ctx)
 	if err != nil {
@@ -168,6 +194,11 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to sync server: %w", err)
 	}
 
+	return s.SyncWithManifest(ctx, remoteManifest)
+}
+
+// SyncWithManifest synchronizes the instance using an already fetched remote manifest.
+func (s *Syncer) SyncWithManifest(ctx context.Context, remoteManifest *manifest.Manifest) error {
 	plan, err := s.CalculatePlan(remoteManifest)
 	if err != nil {
 		return fmt.Errorf("failed to calculate sync diff: %w", err)
@@ -186,6 +217,8 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		s.opts.Logger("[Lunaris] Deleting obsolete file: %s", relPath)
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 			s.opts.Logger("[Lunaris] Warning: Failed to remove %s: %v", fullPath, err)
+		} else {
+			s.opts.Logger("[Lunaris] Successfully removed obsolete file: %s", relPath)
 		}
 	}
 
@@ -239,6 +272,8 @@ func (s *Syncer) downloadFiles(ctx context.Context, downloads []manifest.FileEnt
 
 				done := atomic.AddInt64(&completedCount, 1)
 				curBytes := atomic.AddInt64(&completedBytes, entry.Size)
+
+				s.opts.Logger("[Lunaris] Verified and installed: %s (%d/%d)", clientPath, done, totalCount)
 
 				if s.opts.OnProgress != nil {
 					s.opts.OnProgress(clientPath, int(done), int(totalCount), curBytes, totalBytes)
@@ -320,4 +355,91 @@ func buildFileURL(baseURL, relPath string) string {
 		escapedParts[i] = url.PathEscape(p)
 	}
 	return baseURL + "/" + strings.Join(escapedParts, "/")
+}
+
+// ResyncOptions configures the full instance resynchronization and modification reset.
+type ResyncOptions struct {
+	InstanceDir string
+	Config      *config.Config
+	ServerURL   string
+	WorkerCount int
+	Logger      func(format string, args ...interface{})
+}
+
+// Resync resets all user modifications and approved rules, then synchronizes the instance
+// to 100% match the server pack manifest.
+func Resync(ctx context.Context, opts ResyncOptions) error {
+	if opts.InstanceDir == "" {
+		return errors.New("instance directory is required for resync")
+	}
+
+	if opts.Logger == nil {
+		opts.Logger = func(string, ...interface{}) {}
+	}
+
+	if opts.WorkerCount <= 0 {
+		opts.WorkerCount = 4
+	}
+
+	// 1. Reset user rules in .lunaris_state.json
+	if err := modtracker.ResetToPack(opts.InstanceDir); err != nil {
+		opts.Logger("[Resync] Warning: Failed to reset state rules: %v", err)
+	} else {
+		opts.Logger("[Resync] Cleared all custom mod rules and overrides.")
+	}
+
+	// 2. Load or build instance config
+	cfg := opts.Config
+	if cfg == nil {
+		var err error
+		cfg, _, err = config.FindInstanceConfig(opts.InstanceDir)
+		if err != nil {
+			if opts.ServerURL == "" {
+				return fmt.Errorf("no lunaris.json found in %s and no server URL provided: %w", opts.InstanceDir, err)
+			}
+			cfg = config.DefaultConfig()
+			cfg.ServerURL = opts.ServerURL
+		}
+	}
+
+	cfgCopy := *cfg
+	if opts.ServerURL != "" {
+		cfgCopy.ServerURL = opts.ServerURL
+	}
+	// Force DeleteExtra to true so custom added mods are removed
+	cfgCopy.DeleteExtra = true
+
+	// 3. Run syncer with nil user rules to restore 100% server match
+	s := New(SyncOptions{
+		Config:      &cfgCopy,
+		GameDir:     opts.InstanceDir,
+		WorkerCount: opts.WorkerCount,
+		Logger:      opts.Logger,
+		UserRules:   nil,
+	})
+
+	remoteM, err := s.FetchRemoteManifest(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to fetch remote manifest: %w", err)
+	}
+
+	if err := s.SyncWithManifest(ctx, remoteM); err != nil {
+		return fmt.Errorf("resync failed: %w", err)
+	}
+
+	// 4. Update baseline to match server manifest
+	var features []string
+	if cfgCopy.EnableVR {
+		features = append(features, "vr")
+	}
+	remoteMap := remoteM.FilteredMap(features)
+	if err := modtracker.UpdateBaseline(opts.InstanceDir, &modtracker.State{
+		Version:   modtracker.CurrentStateVersion,
+		UserRules: modtracker.NewUserRules(),
+	}, remoteMap); err != nil {
+		opts.Logger("[Resync] Warning: Failed to update baseline: %v", err)
+	}
+
+	opts.Logger("[Resync] Instance successfully resynced and matched to server pack.")
+	return nil
 }

@@ -481,6 +481,13 @@ type InstallConfig struct {
 	RequiredGameVersion string // Required Minecraft version (defaults to "1.20.1")
 	HookCurseForge      *bool  // Whether to hook CurseForge Java runtime (defaults to true)
 	EnableVR            bool   // Whether to sync optional Windows VR mods and configs
+	Logger              func(format string, args ...interface{})
+}
+
+func (opts *InstallConfig) log(format string, args ...interface{}) {
+	if opts.Logger != nil {
+		opts.Logger(format, args...)
+	}
 }
 
 // Install sets up LunarisInjector for a given instance.
@@ -488,6 +495,8 @@ func Install(opts InstallConfig) error {
 	if opts.InstanceDir == "" {
 		return errors.New("instance directory is required")
 	}
+
+	opts.log("[Installer] Starting installation for instance: %s", opts.InstanceDir)
 
 	info, err := os.Stat(opts.InstanceDir)
 	if err != nil || !info.IsDir() {
@@ -501,6 +510,7 @@ func Install(opts InstallConfig) error {
 
 	// Version Verification: do not allow install if version does not match
 	detectedVer := DetectInstanceVersion(opts.InstanceDir)
+	opts.log("[Installer] Target Minecraft version: %s (detected: %s)", reqVersion, detectedVer)
 	if detectedVer != "" && detectedVer != reqVersion {
 		return fmt.Errorf("version mismatch: this modpack requires Minecraft %s, but selected instance '%s' is on Minecraft %s. Installation is not allowed.",
 			reqVersion, filepath.Base(opts.InstanceDir), detectedVer)
@@ -515,6 +525,7 @@ func Install(opts InstallConfig) error {
 		}
 		realJava = detectedJava
 	}
+	opts.log("[Installer] Real Java runtime resolved to: %s", realJava)
 
 	// 2. Locate Lunaris executable
 	lunarisBin := opts.LunarisBinary
@@ -526,6 +537,7 @@ func Install(opts InstallConfig) error {
 		lunarisBin = self
 	}
 	lunarisBin, _ = filepath.Abs(lunarisBin)
+	opts.log("[Installer] Lunaris binary source: %s", lunarisBin)
 
 	// Copy lunaris binary into the instance directory for standalone self-contained execution
 	binName := filepath.Base(lunarisBin)
@@ -534,6 +546,7 @@ func Install(opts InstallConfig) error {
 		if data, err := os.ReadFile(lunarisBin); err == nil {
 			if err := os.WriteFile(destBin, data, 0755); err == nil {
 				lunarisBin = destBin
+				opts.log("[Installer] Copied Lunaris wrapper binary into instance: %s", destBin)
 			}
 		}
 	}
@@ -560,16 +573,19 @@ func Install(opts InstallConfig) error {
 	if err := cfg.Save(cfgPath); err != nil {
 		return fmt.Errorf("failed to save %s: %w", cfgPath, err)
 	}
+	opts.log("[Installer] Saved configuration to %s (server: %s, VR: %v)", cfgPath, serverURL, opts.EnableVR)
 
 	// 4. If a launcher_profiles.json is provided, patch the profile's javaDir
 	if opts.ProfileFile != "" && opts.ProfileID != "" {
 		if err := patchProfileJavaDir(opts.ProfileFile, opts.ProfileID, lunarisBin); err != nil {
 			return fmt.Errorf("failed to patch profile in %s: %w", opts.ProfileFile, err)
 		}
+		opts.log("[Installer] Patched profile %s in %s with javaDir=%s", opts.ProfileID, opts.ProfileFile, lunarisBin)
 	} else {
 		localProfiles := filepath.Join(opts.InstanceDir, "launcher_profiles.json")
 		if _, err := os.Stat(localProfiles); err == nil {
 			_ = patchAllProfilesInFile(localProfiles, lunarisBin)
+			opts.log("[Installer] Patched profiles in %s with javaDir=%s", localProfiles, lunarisBin)
 		}
 	}
 
@@ -581,33 +597,57 @@ func Install(opts InstallConfig) error {
 	if shouldHook {
 		runtimeDirs := FindCurseForgeJavaRuntimeDirs(opts.InstanceDir)
 		for _, rDir := range runtimeDirs {
-			_, _ = HookCurseForgeJava(rDir, lunarisBin, opts.InstanceDir)
+			hooked, err := HookCurseForgeJava(rDir, lunarisBin, opts.InstanceDir)
+			if err != nil {
+				opts.log("[Installer] Warning: Failed to hook CurseForge Java at %s: %v", rDir, err)
+			} else if hooked {
+				opts.log("[Installer] Successfully hooked CurseForge Java runtime at: %s", rDir)
+			}
 		}
 	}
 
+	opts.log("[Installer] Installation successfully completed for: %s", opts.InstanceDir)
 	return nil
 }
 
 // Uninstall removes LunarisInjector configuration from an instance.
-func Uninstall(instanceDir string, profileFile, profileID string) error {
+func Uninstall(instanceDir string, profileFile, profileID string, loggers ...func(string, ...interface{})) error {
+	var logFn func(string, ...interface{})
+	if len(loggers) > 0 && loggers[0] != nil {
+		logFn = loggers[0]
+	}
+	log := func(format string, args ...interface{}) {
+		if logFn != nil {
+			logFn(format, args...)
+		}
+	}
+
+	log("[Installer] Starting uninstallation for instance: %s", instanceDir)
+
 	cfgPath := filepath.Join(instanceDir, config.ConfigFileName)
 	if _, err := os.Stat(cfgPath); err == nil {
 		_ = os.Remove(cfgPath)
+		log("[Installer] Removed configuration: %s", cfgPath)
 	}
 
 	if profileFile != "" {
 		_ = unpatchProfileJavaDir(profileFile, profileID)
+		log("[Installer] Unpatched profile in: %s", profileFile)
 	}
 
 	localProfiles := filepath.Join(instanceDir, "launcher_profiles.json")
 	if _, err := os.Stat(localProfiles); err == nil {
 		_ = unpatchAllProfilesInFile(localProfiles)
+		log("[Installer] Unpatched profiles in: %s", localProfiles)
 	}
 
 	// Unhook CurseForge Java runtime if applicable
 	runtimeDirs := FindCurseForgeJavaRuntimeDirs(instanceDir)
 	for _, rDir := range runtimeDirs {
-		_, _ = UnhookCurseForgeJava(rDir, instanceDir)
+		restored, err := UnhookCurseForgeJava(rDir, instanceDir)
+		if err == nil && restored {
+			log("[Installer] Restored original CurseForge Java runtime at: %s", rDir)
+		}
 	}
 
 	// Remove instance-local binary if present
@@ -615,10 +655,12 @@ func Uninstall(instanceDir string, profileFile, profileID string) error {
 		for _, entry := range entries {
 			if strings.HasPrefix(entry.Name(), "lunaris") && !entry.IsDir() {
 				_ = os.Remove(filepath.Join(instanceDir, entry.Name()))
+				log("[Installer] Removed instance binary: %s", entry.Name())
 			}
 		}
 	}
 
+	log("[Installer] Uninstallation successfully completed for: %s", instanceDir)
 	return nil
 }
 

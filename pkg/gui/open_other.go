@@ -3,8 +3,11 @@
 package gui
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // OpenBrowser opens the given URL in an application window (Chrome app mode)
@@ -13,8 +16,10 @@ func OpenBrowser(targetURL string) error {
 	switch runtime.GOOS {
 	case "darwin":
 		chromePath := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-		if _, err := exec.LookPath(chromePath); err == nil {
-			return exec.Command(chromePath, "--app="+targetURL, "--window-size=920,840").Start()
+		if _, err := os.Stat(chromePath); err == nil {
+			if err := exec.Command(chromePath, "--app="+targetURL, "--window-size=920,840").Start(); err == nil {
+				return nil
+			}
 		}
 		return OpenDefaultBrowser(targetURL)
 
@@ -36,5 +41,12 @@ func OpenDefaultBrowser(targetURL string) error {
 	return exec.Command("xdg-open", targetURL).Start()
 }
 
-// ShowNativeAlert is a no-op on non-Windows platforms.
-func ShowNativeAlert(title, message string) {}
+// ShowNativeAlert displays a native dialog on macOS or is a no-op on Linux.
+func ShowNativeAlert(title, message string) {
+	if runtime.GOOS == "darwin" {
+		cleanTitle := strings.ReplaceAll(title, `"`, `\"`)
+		cleanMsg := strings.ReplaceAll(message, `"`, `\"`)
+		script := fmt.Sprintf(`display alert "%s" message "%s" as critical buttons {"OK"} default button "OK"`, cleanTitle, cleanMsg)
+		_ = exec.Command("osascript", "-e", script).Run()
+	}
+}

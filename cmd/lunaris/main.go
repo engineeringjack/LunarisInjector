@@ -17,7 +17,9 @@ import (
 	"github.com/engineeringjack/LunarisInjector/pkg/gui"
 	"github.com/engineeringjack/LunarisInjector/pkg/injector"
 	"github.com/engineeringjack/LunarisInjector/pkg/installer"
+	"github.com/engineeringjack/LunarisInjector/pkg/logger"
 	"github.com/engineeringjack/LunarisInjector/pkg/manifest"
+	"github.com/engineeringjack/LunarisInjector/pkg/modtracker"
 	"github.com/engineeringjack/LunarisInjector/pkg/server"
 	"github.com/engineeringjack/LunarisInjector/pkg/syncer"
 	"github.com/engineeringjack/LunarisInjector/pkg/updater"
@@ -26,7 +28,15 @@ import (
 var Version = config.Version
 
 func main() {
-	args := os.Args[1:]
+	var cleanArgs []string
+	for _, a := range os.Args[1:] {
+		// Ignore macOS Finder Process Serial Number argument (e.g. -psn_0_123456)
+		if strings.HasPrefix(a, "-psn") {
+			continue
+		}
+		cleanArgs = append(cleanArgs, a)
+	}
+	args := cleanArgs
 
 	siblingRealJava := injector.GetSiblingRealJava()
 
@@ -75,7 +85,7 @@ func main() {
 // isAdministrativeCommand checks if the first argument is a Lunaris CLI subcommand.
 func isAdministrativeCommand(cmd string) bool {
 	switch strings.ToLower(cmd) {
-	case "gui", "install", "uninstall", "update", "upgrade", "server", "serve", "generate", "gen", "verify", "check", "instances", "list":
+	case "gui", "install", "uninstall", "update", "upgrade", "server", "serve", "generate", "gen", "verify", "check", "instances", "list", "resync", "reset":
 		return true
 	default:
 		return false
@@ -113,6 +123,8 @@ func handleAdminCommand(args []string) {
 		cmdInstall(args[1:])
 	case "uninstall":
 		cmdUninstall(args[1:])
+	case "resync", "reset":
+		cmdResync(args[1:])
 	case "update", "upgrade":
 		cmdUpdate(args[1:])
 	case "server", "serve":
@@ -155,25 +167,55 @@ func isJavaInvocation(args []string) bool {
 
 // runInjector intercepts the launch, synchronizes mods, then executes real Java.
 func runInjector(args []string, siblingRealJava string) {
-	fmt.Println("==================================================")
-	fmt.Printf(" [LunarisInjector v%s] Pre-launch Synchronizer\n", Version)
-	fmt.Println("==================================================")
-
 	gameDir := injector.ExtractGameDir(args)
 	if gameDir == "" {
 		cwd, _ := os.Getwd()
 		gameDir = cwd
 	}
-	fmt.Printf("[Lunaris] Game Directory: %s\n", gameDir)
+
+	// Try loading instance config early to check for custom LogFile setting
+	cfg, cfgPath, cfgErr := config.FindInstanceConfig(gameDir)
+
+	var logOpts logger.Options
+	logOpts.TargetDir = gameDir
+	logOpts.Version = Version
+	logOpts.Args = args
+	if cfg != nil && cfg.LogFile != "" {
+		if filepath.IsAbs(cfg.LogFile) {
+			logOpts.CustomLogFile = cfg.LogFile
+		} else {
+			logOpts.CustomLogFile = filepath.Join(gameDir, cfg.LogFile)
+		}
+	}
+
+	// Initialize action logging for gameDir (overwrites or removes previous run's log)
+	logFiles, logErr := logger.Init(gameDir, logOpts)
+	if logErr != nil {
+		fmt.Fprintf(os.Stderr, "[Lunaris] Warning: Failed to initialize log file: %v\n", logErr)
+	}
+	defer logger.Close()
+
+	logger.Infof("==================================================")
+	logger.Infof(" [LunarisInjector v%s] Pre-launch Synchronizer", Version)
+	logger.Infof("==================================================")
+	if len(logFiles) > 0 {
+		logger.Infof("[Lunaris] Action log initialized: %s", strings.Join(logFiles, ", "))
+	}
+	logger.Infof("[Lunaris] Game Directory: %s", gameDir)
+	if siblingRealJava != "" {
+		logger.Infof("[Lunaris] Operating Mode: Hooked CurseForge Java Wrapper (%s)", siblingRealJava)
+	} else {
+		logger.Infof("[Lunaris] Operating Mode: Standalone Launch Interceptor")
+	}
 
 	updater.CleanupOld()
 
-	cfg, cfgPath, err := config.FindInstanceConfig(gameDir)
-	if err != nil {
-		fmt.Println("[Lunaris] Warning: No lunaris.json configuration found.")
-		fmt.Println("[Lunaris] Skipping file sync and launching Minecraft directly.")
+	if cfgErr != nil {
+		logger.Warnf("[Lunaris] Warning: No lunaris.json configuration found (%v).", cfgErr)
+		logger.Warnf("[Lunaris] Skipping file sync and launching Minecraft directly.")
 	} else {
-		fmt.Printf("[Lunaris] Loaded config from: %s\n", cfgPath)
+		logger.Infof("[Lunaris] Loaded config from: %s", cfgPath)
+		logger.Infof("[Lunaris] Sync Server: %s | VR Mode: %v | Delete Extra: %v", cfg.ServerURL, cfg.EnableVR, cfg.DeleteExtra)
 
 		// Check for auto-update if enabled
 		if cfg.AutoUpdate {
@@ -181,39 +223,164 @@ func runInjector(args []string, siblingRealJava string) {
 			if repo == "" {
 				repo = updater.DefaultGitHubRepo
 			}
+			logger.Infof("[Lunaris] Checking GitHub repo for auto-updates: %s", repo)
 			updateCtx, updateCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_, _ = updater.AutoCheckAndUpdate(updateCtx, repo, Version, gameDir, false, func(format string, a ...interface{}) {
-				fmt.Printf(format+"\n", a...)
-			})
+			_, _ = updater.AutoCheckAndUpdate(updateCtx, repo, Version, gameDir, false, logger.AsFunc())
 			updateCancel()
 		}
 
 		// Version Check: ensure game version matches requirement
 		detectedVer := injector.ExtractGameVersion(args, gameDir)
+		if detectedVer != "" {
+			logger.Infof("[Lunaris] Detected Minecraft Version: %s (Configured target: %s)", detectedVer, cfg.GameVersion)
+		}
 		if detectedVer != "" && cfg.GameVersion != "" && detectedVer != cfg.GameVersion {
-			fmt.Println("==================================================")
-			fmt.Printf("[Lunaris] FATAL ERROR: Minecraft version mismatch!\n")
-			fmt.Printf("[Lunaris] Expected: Minecraft %s | Instance: Minecraft %s\n", cfg.GameVersion, detectedVer)
-			fmt.Println("[Lunaris] Aborting sync to prevent corrupting incompatible game files.")
-			fmt.Println("==================================================")
+			logger.Errorf("==================================================")
+			logger.Errorf("[Lunaris] FATAL ERROR: Minecraft version mismatch!")
+			logger.Errorf("[Lunaris] Expected: Minecraft %s | Instance: Minecraft %s", cfg.GameVersion, detectedVer)
+			logger.Errorf("[Lunaris] Aborting sync to prevent corrupting incompatible game files.")
+			logger.Errorf("==================================================")
+			_ = logger.Sync()
+			_ = logger.Close()
 			os.Exit(1)
+		}
+
+		// Load existing baseline state if present
+		state, stateErr := modtracker.LoadState(gameDir)
+
+		isCLI := false
+		for _, a := range args {
+			if a == "--cli" {
+				isCLI = true
+				break
+			}
+		}
+
+		var initialRules *modtracker.UserRules
+		if state != nil {
+			initialRules = &state.UserRules
 		}
 
 		s := syncer.New(syncer.SyncOptions{
 			Config:      cfg,
 			GameDir:     gameDir,
 			WorkerCount: 4,
-			Logger: func(format string, a ...interface{}) {
-				fmt.Printf(format+"\n", a...)
-			},
+			Logger:      logger.AsFunc(),
+			UserRules:   initialRules,
 		})
 
 		ctx := context.Background()
-		if err := s.Sync(ctx); err != nil && err != syncer.ErrOfflineProceed {
-			fmt.Printf("[Lunaris] Sync failed: %v\n", err)
-			if !cfg.OfflineLaunch {
-				fmt.Println("[Lunaris] Offline launch is disabled. Aborting startup.")
+		var features []string
+		if cfg.EnableVR {
+			features = append(features, "vr")
+		}
+
+		remoteM, err := s.FetchRemoteManifest(ctx)
+		if err != nil {
+			if cfg.OfflineLaunch {
+				logger.Warnf("[Lunaris] Remote sync server is offline or unreachable (%v).", err)
+				logger.Infof("[Lunaris] Offline launch enabled. Starting game with existing local files.")
+				if state != nil {
+					// Detect local changes against baseline even when offline
+					offlineMap := make(map[string]manifest.FileEntry, len(state.BaselineFiles))
+					for p, fs := range state.BaselineFiles {
+						offlineMap[p] = manifest.FileEntry{
+							Path:   p,
+							SHA256: fs.SHA256,
+							Size:   fs.Size,
+						}
+					}
+					changes, _ := modtracker.DetectChanges(gameDir, state, offlineMap, cfg.SyncDirs, cfg.IgnoreFiles)
+					if len(changes) > 0 {
+						logger.Infof("[Lunaris] %d modpack modification(s) detected since last launch. Requesting user action...", len(changes))
+						decisions, cancelled, pErr := gui.ShowChangePrompt(gui.PromptOptions{
+							InstanceDir:  gameDir,
+							InstanceName: filepath.Base(gameDir),
+							Changes:      changes,
+							IsCLI:        isCLI,
+							Logger:       logger.AsFunc(),
+						})
+						if cancelled {
+							logger.Infof("[Lunaris] Launch cancelled by user during mod change review.")
+							_ = logger.Sync()
+							_ = logger.Close()
+							os.Exit(0)
+						}
+						if pErr == nil && decisions != nil {
+							_ = modtracker.ApplyDecisions(gameDir, state, decisions, changes)
+						}
+					}
+				}
+			} else {
+				logger.Errorf("[Lunaris] Sync server unreachable: %v", err)
+				logger.Errorf("[Lunaris] Offline launch is disabled. Aborting startup.")
+				_ = logger.Sync()
+				_ = logger.Close()
 				os.Exit(1)
+			}
+		} else {
+			remoteMap := remoteM.FilteredMap(features)
+
+			if stateErr == modtracker.ErrNoState {
+				// First run: Establish baseline without prompting the user
+				logger.Infof("[Lunaris] First run detected: Establishing baseline sync with server modpack.")
+				if err := s.SyncWithManifest(ctx, remoteM); err != nil {
+					logger.Errorf("[Lunaris] Initial sync failed: %v", err)
+				} else {
+					newState, bErr := modtracker.CreateInitialBaseline(gameDir, remoteMap)
+					if bErr != nil {
+						logger.Warnf("[Lunaris] Warning: Failed to save initial baseline: %v", bErr)
+					} else {
+						logger.Infof("[Lunaris] Initial modpack baseline established (%d files tracked).", len(newState.BaselineFiles))
+					}
+				}
+			} else if state != nil {
+				// Subsequent run: Check if user made changes to mods or configs
+				changes, detectErr := modtracker.DetectChanges(gameDir, state, remoteMap, cfg.SyncDirs, cfg.IgnoreFiles)
+				if detectErr != nil {
+					logger.Warnf("[Lunaris] Warning: Failed to scan directory for mod changes: %v", detectErr)
+				}
+
+				if len(changes) > 0 {
+					logger.Infof("[Lunaris] %d modpack modification(s) detected since last launch. Requesting user action...", len(changes))
+					decisions, cancelled, pErr := gui.ShowChangePrompt(gui.PromptOptions{
+						InstanceDir:  gameDir,
+						InstanceName: filepath.Base(gameDir),
+						Changes:      changes,
+						IsCLI:        isCLI,
+						Logger:       logger.AsFunc(),
+					})
+					if cancelled {
+						logger.Infof("[Lunaris] Launch cancelled by user during mod change review.")
+						_ = logger.Sync()
+						_ = logger.Close()
+						os.Exit(0)
+					}
+					if pErr != nil {
+						logger.Warnf("[Lunaris] Warning during change prompt: %v", pErr)
+					}
+					if err := modtracker.ApplyDecisions(gameDir, state, decisions, changes); err != nil {
+						logger.Errorf("[Lunaris] Failed to apply user decisions: %v", err)
+					}
+				}
+
+				// Apply current user rules to the syncer
+				s.SetUserRules(&state.UserRules)
+
+				if err := s.SyncWithManifest(ctx, remoteM); err != nil {
+					logger.Errorf("[Lunaris] Sync failed: %v", err)
+					if !cfg.OfflineLaunch {
+						logger.Errorf("[Lunaris] Offline launch is disabled. Aborting startup.")
+						_ = logger.Sync()
+						_ = logger.Close()
+						os.Exit(1)
+					}
+				} else {
+					// Refresh baseline files with server manifest
+					if bErr := modtracker.UpdateBaseline(gameDir, state, remoteMap); bErr != nil {
+						logger.Warnf("[Lunaris] Warning: Failed to update baseline snapshot: %v", bErr)
+					}
+				}
 			}
 		}
 	}
@@ -226,20 +393,26 @@ func runInjector(args []string, siblingRealJava string) {
 			configuredJava = cfg.RealJavaPath
 		}
 
+		logger.Infof("[Lunaris] Resolving real Java runtime path (configured: %q)...", configuredJava)
 		detectedJava, err := injector.FindRealJava(configuredJava)
 		if err != nil {
-			fmt.Printf("[Lunaris] FATAL ERROR: %v\n", err)
+			logger.Errorf("[Lunaris] FATAL ERROR: %v", err)
+			_ = logger.Sync()
+			_ = logger.Close()
 			os.Exit(1)
 		}
 		realJava = detectedJava
 	}
 
-	fmt.Printf("[Lunaris] Launching Minecraft via: %s\n", realJava)
-	fmt.Println("==================================================")
+	logger.Infof("[Lunaris] Launching Minecraft via: %s", realJava)
+	logger.Infof("==================================================")
+	logger.Infof("[Lunaris] Pre-launch synchronization completed. Handing over execution to Java runtime.")
+	_ = logger.Sync()
+	_ = logger.Close()
 
 	exitCode, err := injector.ExecOrRunJava(realJava, args)
 	if err != nil {
-		fmt.Printf("[Lunaris] Error running Java: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[Lunaris] Error running Java: %v\n", err)
 	}
 	os.Exit(exitCode)
 }
@@ -262,17 +435,25 @@ func cmdInstall(args []string) {
 
 	// Non-interactive mode (when --instance is explicitly passed)
 	if *instanceFlag != "" {
+		logFiles, _ := logger.Init(*instanceFlag, logger.Options{Version: Version, Args: args})
+		defer logger.Close()
+
+		logger.Infof("[Installer] Installing LunarisInjector for: %s", *instanceFlag)
+		if len(logFiles) > 0 {
+			logger.Infof("[Installer] Action log initialized: %s", strings.Join(logFiles, ", "))
+		}
+
 		existingMods := installer.CountExistingMods(*instanceFlag)
 		if existingMods > 0 && !config.IsLunarisInstance(*instanceFlag) {
 			if !*forceFlag && !*overwriteFlag {
-				fmt.Println("⚠️  WARNING: Existing mods detected!")
-				fmt.Printf("   Instance '%s' already contains %d mod file(s) in 'mods/'.\n", *instanceFlag, existingMods)
-				fmt.Println("   Installing LunarisInjector will synchronize this directory with the remote server,")
-				fmt.Println("   which will OVERWRITE or DELETE local mods not present in the modpack manifest.")
-				fmt.Println("   Pass --force or --overwrite-mods to proceed.")
+				logger.Warnf("⚠️  WARNING: Existing mods detected!")
+				logger.Warnf("   Instance '%s' already contains %d mod file(s) in 'mods/'.", *instanceFlag, existingMods)
+				logger.Warnf("   Installing LunarisInjector will synchronize this directory with the remote server,")
+				logger.Warnf("   which will OVERWRITE or DELETE local mods not present in the modpack manifest.")
+				logger.Warnf("   Pass --force or --overwrite-mods to proceed.")
 				os.Exit(1)
 			}
-			fmt.Printf("⚠️  Proceeding with overwrite of %d existing mod(s) in: %s\n", existingMods, *instanceFlag)
+			logger.Infof("⚠️  Proceeding with overwrite of %d existing mod(s) in: %s", existingMods, *instanceFlag)
 		}
 
 		enableVR := *vrFlag || *enableVRFlag
@@ -284,25 +465,26 @@ func cmdInstall(args []string) {
 			ProfileFile:         *profileFile,
 			ProfileID:           *profileID,
 			EnableVR:            enableVR,
+			Logger:              logger.AsFunc(),
 		})
 		if err != nil {
-			fmt.Printf("❌ Installation failed: %v\n", err)
+			logger.Errorf("❌ Installation failed: %v", err)
 			os.Exit(1)
 		}
-		fmt.Printf("✔ LunarisInjector successfully configured for: %s\n", *instanceFlag)
-		fmt.Printf("  Sync Server URL: %s\n", *serverFlag)
+		logger.Infof("✔ LunarisInjector successfully configured for: %s", *instanceFlag)
+		logger.Infof("  Sync Server URL: %s", *serverFlag)
 		if enableVR {
-			fmt.Println("  ✦ Windows VR support (Vivecraft): ENABLED")
+			logger.Infof("  ✦ Windows VR support (Vivecraft): ENABLED")
 		} else {
-			fmt.Println("  ✦ Windows VR support (Vivecraft): DISABLED (Standard)")
+			logger.Infof("  ✦ Windows VR support (Vivecraft): DISABLED (Standard)")
 		}
 		runtimes := installer.FindCurseForgeJavaRuntimeDirs(*instanceFlag)
 		for _, r := range runtimes {
 			if installer.IsCurseForgeJavaHooked(r) {
-				fmt.Printf("  ✔ CurseForge Java runtime hooked: %s\n", r)
+				logger.Infof("  ✔ CurseForge Java runtime hooked: %s", r)
 			}
 		}
-		fmt.Println("  Ready to play! Simply click 'Play' in CurseForge.")
+		logger.Infof("  Ready to play! Simply click 'Play' in CurseForge.")
 		return
 	}
 
@@ -555,7 +737,14 @@ func cmdInstall(args []string) {
 	selfExe, _ := os.Executable()
 	selfExe, _ = filepath.Abs(selfExe)
 
-	fmt.Println("\nConfiguring LunarisInjector...")
+	logFiles, _ := logger.Init(selectedPath, logger.Options{Version: Version, Args: args})
+	defer logger.Close()
+
+	logger.Infof("\nConfiguring LunarisInjector for: %s", selectedPath)
+	if len(logFiles) > 0 {
+		logger.Infof("[Installer] Action log initialized: %s", strings.Join(logFiles, ", "))
+	}
+
 	err := installer.Install(installer.InstallConfig{
 		InstanceDir:   selectedPath,
 		ServerURL:     serverInput,
@@ -564,10 +753,11 @@ func cmdInstall(args []string) {
 		ProfileFile:   selectedProfileFile,
 		ProfileID:     selectedProfileID,
 		EnableVR:      enableVR,
+		Logger:        logger.AsFunc(),
 	})
 
 	if err != nil {
-		fmt.Printf("\n❌ Installation error: %v\n", err)
+		logger.Errorf("\n❌ Installation error: %v", err)
 		return
 	}
 
@@ -578,19 +768,19 @@ func cmdInstall(args []string) {
 	}
 
 	// Quick connectivity check
-	fmt.Println("Testing server connection...")
+	logger.Infof("Testing server connection (%s)...", serverInput)
 	client := &http.Client{Timeout: 4 * time.Second}
 	resp, err := client.Get(strings.TrimRight(serverInput, "/") + "/manifest.json")
 	if err == nil && resp.StatusCode == http.StatusOK {
 		var m manifest.Manifest
 		if json.NewDecoder(resp.Body).Decode(&m) == nil {
-			fmt.Printf("✔ Connected to sync server (%d files ready to sync)\n", len(m.Files))
+			logger.Infof("✔ Connected to sync server (%d files ready to sync)", len(m.Files))
 		} else {
-			fmt.Println("✔ Connected to sync server")
+			logger.Infof("✔ Connected to sync server")
 		}
 		resp.Body.Close()
 	} else {
-		fmt.Println("ℹ Sync server offline or unreachable. Offline launch mode is enabled.")
+		logger.Warnf("ℹ Sync server offline or unreachable (%v). Offline launch mode is enabled.", err)
 	}
 
 	fmt.Println()
@@ -676,17 +866,25 @@ func cmdUninstall(args []string) {
 		return
 	}
 
-	err := installer.Uninstall(target, "", "")
+	logFiles, _ := logger.Init(target, logger.Options{Version: Version, Args: args})
+	defer logger.Close()
+
+	logger.Infof("[Installer] Uninstalling LunarisInjector from: %s", target)
+	if len(logFiles) > 0 {
+		logger.Infof("[Installer] Action log initialized: %s", strings.Join(logFiles, ", "))
+	}
+
+	err := installer.Uninstall(target, "", "", logger.AsFunc())
 	if err != nil {
-		fmt.Printf("❌ Uninstall error: %v\n", err)
+		logger.Errorf("❌ Uninstall error: %v", err)
 		return
 	}
-	fmt.Println("✔ LunarisInjector successfully uninstalled from:", target)
+	logger.Infof("✔ LunarisInjector successfully uninstalled from: %s", target)
 
 	runtimes := installer.FindCurseForgeJavaRuntimeDirs(target)
 	for _, r := range runtimes {
 		if !installer.IsCurseForgeJavaHooked(r) {
-			fmt.Printf("✔ Restored stock CurseForge Java runtime at: %s\n", r)
+			logger.Infof("✔ Restored stock CurseForge Java runtime at: %s", r)
 		}
 	}
 }
@@ -697,37 +895,42 @@ func cmdUpdate(args []string) {
 	forceFlag := fs.Bool("force", false, "Force update even if version is up-to-date")
 	_ = fs.Parse(args)
 
+	logFiles, _ := logger.Init("", logger.Options{Version: Version, Args: args})
+	defer logger.Close()
+
+	if len(logFiles) > 0 {
+		logger.Infof("[Updater] Action log initialized: %s", strings.Join(logFiles, ", "))
+	}
+
 	updater.CleanupOld()
 
-	fmt.Printf("Checking for updates from GitHub (%s)...\n", *repoFlag)
+	logger.Infof("Checking for updates from GitHub (%s)...", *repoFlag)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	info, hasUpdate, err := updater.CheckUpdate(ctx, *repoFlag, Version)
 	if err != nil {
-		fmt.Printf("❌ Update check failed: %v\n", err)
+		logger.Errorf("❌ Update check failed: %v", err)
 		os.Exit(1)
 	}
 
 	if !hasUpdate && !*forceFlag {
-		fmt.Printf("✔ LunarisInjector is up to date (v%s).\n", Version)
+		logger.Infof("✔ LunarisInjector is up to date (v%s).", Version)
 		return
 	}
 
 	if info != nil {
-		fmt.Printf("✦ New version found: v%s (Current: v%s)\n", info.Version, Version)
+		logger.Infof("✦ New version found: v%s (Current: v%s)", info.Version, Version)
 		if info.AssetSize > 0 {
-			fmt.Printf("✦ Asset: %s (%.2f MB)\n", info.AssetName, float64(info.AssetSize)/(1024*1024))
+			logger.Infof("✦ Asset: %s (%.2f MB)", info.AssetName, float64(info.AssetSize)/(1024*1024))
 		}
-		if err := updater.SelfUpdate(ctx, info.AssetURL, func(format string, a ...interface{}) {
-			fmt.Printf(format+"\n", a...)
-		}); err != nil {
-			fmt.Printf("❌ Update failed: %v\n", err)
+		if err := updater.SelfUpdate(ctx, info.AssetURL, logger.AsFunc()); err != nil {
+			logger.Errorf("❌ Update failed: %v", err)
 			os.Exit(1)
 		}
-		fmt.Printf("✔ Successfully updated LunarisInjector to v%s!\n", info.Version)
+		logger.Infof("✔ Successfully updated LunarisInjector to v%s!", info.Version)
 	} else if *forceFlag {
-		fmt.Printf("No newer version found, but --force was specified. No binary replaced.\n")
+		logger.Infof("No newer version found, but --force was specified. No binary replaced.")
 	}
 }
 
@@ -818,6 +1021,50 @@ func cmdGenerate(args []string) {
 	fmt.Printf("  Total size  : %.2f MB\n", float64(totalBytes)/(1024*1024))
 }
 
+func cmdResync(args []string) {
+	fs := flag.NewFlagSet("resync", flag.ExitOnError)
+	instanceFlag := fs.String("instance", "", "Path to the Minecraft instance directory (default: current directory)")
+	serverFlag := fs.String("server", "", "Override sync server URL (defaults to lunaris.json config)")
+	_ = fs.Parse(args)
+
+	target := *instanceFlag
+	if target == "" && fs.NArg() > 0 {
+		target = fs.Arg(0)
+	}
+	if target == "" {
+		cwd, _ := os.Getwd()
+		target = cwd
+	}
+
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid target path: %v\n", err)
+		os.Exit(1)
+	}
+
+	logFiles, _ := logger.Init(absTarget, logger.Options{Version: Version, Args: args})
+	defer logger.Close()
+
+	logger.Infof("[Resync] Starting modpack resynchronization for: %s", absTarget)
+	if len(logFiles) > 0 {
+		logger.Infof("[Resync] Action log initialized: %s", strings.Join(logFiles, ", "))
+	}
+
+	err = syncer.Resync(context.Background(), syncer.ResyncOptions{
+		InstanceDir: absTarget,
+		ServerURL:   *serverFlag,
+		WorkerCount: 4,
+		Logger:      logger.AsFunc(),
+	})
+	if err != nil {
+		logger.Errorf("[Resync] Failed: %v", err)
+		os.Exit(1)
+	}
+
+	logger.Infof("\n✔ Instance successfully resynced to server modpack!")
+	logger.Infof("  All custom modifications have been forgotten and matched to server.")
+}
+
 func cmdVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	instanceFlag := fs.String("instance", ".", "Path to the Minecraft instance directory")
@@ -830,9 +1077,17 @@ func cmdVerify(args []string) {
 		os.Exit(1)
 	}
 
+	logFiles, _ := logger.Init(absDir, logger.Options{Version: Version, Args: args})
+	defer logger.Close()
+
+	logger.Infof("[Verify] Verifying instance at: %s", absDir)
+	if len(logFiles) > 0 {
+		logger.Infof("[Verify] Action log initialized: %s", strings.Join(logFiles, ", "))
+	}
+
 	cfg, _, err := config.FindInstanceConfig(absDir)
 	if err != nil && *serverFlag == "" {
-		fmt.Println("Error: No lunaris.json found and no --server URL specified.")
+		logger.Errorf("Error: No lunaris.json found and no --server URL specified.")
 		os.Exit(1)
 	}
 
@@ -847,43 +1102,41 @@ func cmdVerify(args []string) {
 		Config:      cfg,
 		GameDir:     absDir,
 		WorkerCount: 4,
-		Logger: func(format string, a ...interface{}) {
-			fmt.Printf(format+"\n", a...)
-		},
+		Logger:      logger.AsFunc(),
 	})
 
 	remote, err := s.FetchRemoteManifest(context.Background())
 	if err != nil {
-		fmt.Printf("Failed to fetch remote manifest: %v\n", err)
+		logger.Errorf("Failed to fetch remote manifest: %v", err)
 		os.Exit(1)
 	}
 
 	plan, err := s.CalculatePlan(remote)
 	if err != nil {
-		fmt.Printf("Failed to calculate plan: %v\n", err)
+		logger.Errorf("Failed to calculate plan: %v", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("\n=== Verification Report ===")
+	logger.Infof("\n=== Verification Report ===")
 	if cfg.EnableVR {
-		fmt.Println("Feature Mode      : Windows VR Enabled (Vivecraft active)")
+		logger.Infof("Feature Mode      : Windows VR Enabled (Vivecraft active)")
 	} else {
-		fmt.Println("Feature Mode      : Standard Desktop (VR disabled)")
+		logger.Infof("Feature Mode      : Standard Desktop (VR disabled)")
 	}
-	fmt.Printf("Matches / In Sync : %d files\n", plan.Unchanged)
-	fmt.Printf("Need Download     : %d files (%.2f MB)\n", len(plan.Downloads), float64(plan.TotalBytes)/(1024*1024))
+	logger.Infof("Matches / In Sync : %d files", plan.Unchanged)
+	logger.Infof("Need Download     : %d files (%.2f MB)", len(plan.Downloads), float64(plan.TotalBytes)/(1024*1024))
 	for _, d := range plan.Downloads {
-		fmt.Printf("  + [ADD/UPDATE] %s (%d bytes)\n", d.ClientPath(), d.Size)
+		logger.Infof("  + [ADD/UPDATE] %s (%d bytes)", d.ClientPath(), d.Size)
 	}
-	fmt.Printf("Obsolete / Delete : %d files\n", len(plan.Deletions))
+	logger.Infof("Obsolete / Delete : %d files", len(plan.Deletions))
 	for _, del := range plan.Deletions {
-		fmt.Printf("  - [DELETE]     %s\n", del)
+		logger.Infof("  - [DELETE]     %s", del)
 	}
 
 	if len(plan.Downloads) == 0 && len(plan.Deletions) == 0 {
-		fmt.Println("\n✓ Instance is 100% in sync with the remote server!")
+		logger.Infof("\n✓ Instance is 100%% in sync with the remote server!")
 	} else {
-		fmt.Println("\n! Instance has discrepancies compared to the remote server.")
+		logger.Warnf("\n! Instance has discrepancies compared to the remote server.")
 	}
 }
 
@@ -956,6 +1209,7 @@ COMMANDS:
   gui           Launch the modern graphical web installer interface
   install       Set up an instance (opens GUI by default; pass --cli for terminal)
   uninstall     Revert an instance back to normal
+  resync        Resync instance, forget all custom modifications, and match server
   update        Check GitHub and update LunarisInjector to the latest release
   server        Run a built-in sync server with live manifest & file downloads
   generate      Generate a static manifest.json from a folder (for Nginx, S3, etc.)
@@ -984,6 +1238,9 @@ EXAMPLES:
 
   # 5. Check instance sync status
   lunaris verify --instance ~/.minecraft
+
+  # 6. Resync instance and wipe all custom modifications
+  lunaris resync --instance ~/.minecraft
 
 `, Version)
 }

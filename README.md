@@ -9,7 +9,10 @@ When the player clicks **"Play"** in CurseForge, LunarisInjector intercepts the 
 ## ⚡ Key Features
 
 - **Zero-Click for Players**: Once installed, players just press **"Play"** in CurseForge as usual. Updates, additions, and deletions happen automatically before the game boots.
+- **Client Mod Flexibility & Change Detection**: Want to run a custom client-side minimap, remove a troublesome mod, or tweak a local config? Lunaris detects differences after the initial baseline run, presents an intuitive decision popup, and remembers your choices on subsequent launches.
+- **Resync to Server Pack**: Easily forget all modifications and resync directly to 100% server match at any time via the GUI dashboard, the conflict popup, or `lunaris resync`.
 - **Fast Multi-Threaded Hashing & Downloads**: Uses SHA-256 with parallel download workers and atomic replacements (`.tmp` verification -> atomic rename) to avoid corrupt mod files.
+- **Action Logging & Diagnostics**: Automatically logs all pre-launch synchronization, downloads, verifications, deletions, and installations to `lunaris.log` and `logs/lunaris.log`, cleanly refreshing each run.
 - **Offline Safe**: If your sync server is offline or unreachable, Lunaris logs a warning and boots Minecraft anyway with existing local files so players aren't locked out.
 - **Built-in Auto-Updating Server**: Run `lunaris server --dir ./modpack` anywhere to instantly host files with real-time hash caching and a clean web dashboard.
 - **Static Hosting Friendly**: If you prefer Nginx, Apache, Caddy, Cloudflare R2, AWS S3, or GitHub Pages, simply run `lunaris generate` to create `manifest.json`.
@@ -94,6 +97,7 @@ If you prefer manual setup:
 | `ignore_files` | string[] | `[]` | Glob patterns for files to keep and ignore (e.g. `["*optifine*", "custom-settings.json"]`). |
 | `offline_launch` | bool | `true` | If `true`, launches Minecraft even if the server is unreachable. |
 | `timeout_sec` | int | `10` | HTTP timeout in seconds for server queries and downloads. |
+| `log_file` | string | `""` | Optional custom path for action logs. Defaults to `lunaris.log` and `logs/lunaris.log` in instance folder. |
 
 ---
 
@@ -102,6 +106,7 @@ If you prefer manual setup:
 ```bash
 lunaris install            # Interactive or automated installer
 lunaris uninstall          # Reverts instance back to original state
+lunaris resync             # Resyncs instance, forgets modifications, and matches server
 lunaris server             # Starts the built-in HTTP sync server with live dashboard
 lunaris generate           # Generates static manifest.json in a folder
 lunaris verify             # Compares instance against server without launching game
