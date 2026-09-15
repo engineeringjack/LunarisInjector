@@ -695,11 +695,11 @@ func (s *Server) Handler() http.Handler {
                         <strong>Download the Lunaris Installer</strong>
                         <p>Select your operating system:</p>
                         <div class="download-buttons">
-                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.4" class="btn btn-primary" download>Windows (.exe)</a>
-                            <a href="/installers/Lunaris-macOS.dmg?v=1.0.4" class="btn" download>macOS (.dmg)</a>
-                            <a href="/installers/Lunaris-macOS.zip?v=1.0.4" class="btn" download>macOS (.zip)</a>
-                            <a href="/installers/lunaris_1.0.4_amd64.deb?v=1.0.4" class="btn" download>Linux (.deb)</a>
-                            <a href="/installers/Lunaris-Linux-x86_64.tar.gz?v=1.0.4" class="btn" download>Linux (.tar.gz)</a>
+                            <a href="/installers/lunaris-windows-amd64.exe?v=1.0.5" class="btn btn-primary" download>Windows (.exe)</a>
+                            <a href="/installers/Lunaris-macOS.dmg?v=1.0.5" class="btn" download>macOS (.dmg)</a>
+                            <a href="/installers/Lunaris-macOS.zip?v=1.0.5" class="btn" download>macOS (.zip)</a>
+                            <a href="/installers/lunaris_1.0.5_amd64.deb?v=1.0.5" class="btn" download>Linux (.deb)</a>
+                            <a href="/installers/Lunaris-Linux-x86_64.tar.gz?v=1.0.5" class="btn" download>Linux (.tar.gz)</a>
                         </div>
                         <div style="margin-top: 10px; font-size: 0.84rem; color: var(--text-muted); line-height: 1.45;">
                             <strong>🍎 macOS:</strong> Download <strong>Lunaris-macOS.dmg</strong> and open it. Right-click (or Control-click) <strong>Lunaris.app</strong> and select <strong>Open</strong> to launch without opening System Settings, or double-click <code>Open-Lunaris.command</code>.<br/>
