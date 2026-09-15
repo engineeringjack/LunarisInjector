@@ -139,13 +139,13 @@ jobs:
           ln -s /Applications dist/dmg_staging/Applications
 
           cat << 'EOF' > dist/dmg_staging/Open-Lunaris.command
-#!/bin/bash
-cd "$(dirname "$0")"
-echo "Starting Lunaris..."
-xattr -cr Lunaris.app 2>/dev/null || true
-chmod +x Lunaris.app/Contents/MacOS/lunaris 2>/dev/null || true
-open Lunaris.app
-EOF
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          echo "Starting Lunaris..."
+          xattr -cr Lunaris.app 2>/dev/null || true
+          chmod +x Lunaris.app/Contents/MacOS/lunaris 2>/dev/null || true
+          open Lunaris.app
+          EOF
           chmod +x dist/dmg_staging/Open-Lunaris.command
 
           # 9. Create native macOS Disk Image (.dmg) and ad-hoc sign it
