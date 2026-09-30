@@ -134,6 +134,19 @@ func ShouldIgnore(relPath string, patterns []string) bool {
 // ScanDirectory scans the specified baseDir and subdirectories (e.g. "mods", "config", "global_packs")
 // and builds a Manifest with SHA-256 hashes and file sizes.
 func ScanDirectory(baseDir string, subDirs []string, ignorePatterns []string) (*Manifest, error) {
+	return ScanDirectoryWithOptions(baseDir, subDirs, ignorePatterns, false)
+}
+
+// ScanServerDirectory scans a server sync repository and builds a Manifest.
+// It maps optional feature directories to their client destinations and maps
+// server-disabled mods (.disabled, e.g. client-only mods on a dedicated server)
+// to active files on the client by stripping the .disabled suffix in DestPath.
+func ScanServerDirectory(baseDir string, subDirs []string, ignorePatterns []string) (*Manifest, error) {
+	return ScanDirectoryWithOptions(baseDir, subDirs, ignorePatterns, true)
+}
+
+// ScanDirectoryWithOptions scans baseDir with optional server-repository mapping rules.
+func ScanDirectoryWithOptions(baseDir string, subDirs []string, ignorePatterns []string, isServerRepo bool) (*Manifest, error) {
 	if len(subDirs) == 0 {
 		subDirs = DefaultSyncDirs
 	}
@@ -200,6 +213,18 @@ func ScanDirectory(baseDir string, subDirs []string, ignorePatterns []string) (*
 				if len(parts) >= 3 {
 					feature = parts[1]
 					destPath = strings.Join(parts[2:], "/")
+				}
+			}
+
+			// In server repositories, client-only mods are stored as .jar.disabled so the dedicated
+			// server does not crash on startup. When sending to clients, map DestPath to the active .jar.
+			if isServerRepo {
+				targetForClient := destPath
+				if targetForClient == "" {
+					targetForClient = normRel
+				}
+				if strings.HasSuffix(strings.ToLower(targetForClient), ".disabled") {
+					destPath = targetForClient[:len(targetForClient)-len(".disabled")]
 				}
 			}
 

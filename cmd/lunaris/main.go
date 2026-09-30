@@ -279,36 +279,62 @@ func runInjector(args []string, siblingRealJava string) {
 		if err != nil {
 			if cfg.OfflineLaunch {
 				logger.Warnf("[Lunaris] Remote sync server is offline or unreachable (%v).", err)
-				logger.Infof("[Lunaris] Offline launch enabled. Starting game with existing local files.")
-				if state != nil {
-					// Detect local changes against baseline even when offline
-					offlineMap := make(map[string]manifest.FileEntry, len(state.BaselineFiles))
-					for p, fs := range state.BaselineFiles {
-						offlineMap[p] = manifest.FileEntry{
-							Path:   p,
-							SHA256: fs.SHA256,
-							Size:   fs.Size,
-						}
+				logger.Infof("[Lunaris] Offline launch enabled. Verifying existing local installation...")
+
+				if state == nil {
+					logger.Errorf("==================================================")
+					logger.Errorf("[Lunaris] FATAL ERROR: Cannot launch offline on first launch!")
+					logger.Errorf("[Lunaris] No modpack baseline exists. Please connect to the internet to complete installation.")
+					logger.Errorf("==================================================")
+					_ = logger.Sync()
+					_ = logger.Close()
+					os.Exit(1)
+				}
+
+				offlineResult := s.VerifyOfflineBaseline(state)
+				if offlineResult.HasMissingMods() {
+					logger.Errorf("==================================================")
+					logger.Errorf("[Lunaris] FATAL ERROR: Cannot launch offline! Required mod(s) are missing (%d missing):", len(offlineResult.MissingMods))
+					for _, m := range offlineResult.MissingMods {
+						logger.Errorf("[Lunaris]   - MISSING: %s", m)
 					}
-					changes, _ := modtracker.DetectChanges(gameDir, state, offlineMap, cfg.SyncDirs, cfg.IgnoreFiles)
-					if len(changes) > 0 {
-						logger.Infof("[Lunaris] %d modpack modification(s) detected since last launch. Requesting user action...", len(changes))
-						decisions, cancelled, pErr := gui.ShowChangePrompt(gui.PromptOptions{
-							InstanceDir:  gameDir,
-							InstanceName: filepath.Base(gameDir),
-							Changes:      changes,
-							IsCLI:        isCLI,
-							Logger:       logger.AsFunc(),
-						})
-						if cancelled {
-							logger.Infof("[Lunaris] Launch cancelled by user during mod change review.")
-							_ = logger.Sync()
-							_ = logger.Close()
-							os.Exit(0)
-						}
-						if pErr == nil && decisions != nil {
-							_ = modtracker.ApplyDecisions(gameDir, state, decisions, changes)
-						}
+					for _, c := range offlineResult.CorruptFiles {
+						logger.Errorf("[Lunaris]   - CORRUPT: %s", c)
+					}
+					logger.Errorf("[Lunaris] Minecraft launch aborted. All required mods must be present.")
+					logger.Errorf("==================================================")
+					_ = logger.Sync()
+					_ = logger.Close()
+					os.Exit(1)
+				}
+
+				// Detect local changes against baseline even when offline
+				offlineMap := make(map[string]manifest.FileEntry, len(state.BaselineFiles))
+				for p, fs := range state.BaselineFiles {
+					offlineMap[p] = manifest.FileEntry{
+						Path:   p,
+						SHA256: fs.SHA256,
+						Size:   fs.Size,
+					}
+				}
+				changes, _ := modtracker.DetectChanges(gameDir, state, offlineMap, cfg.SyncDirs, cfg.IgnoreFiles)
+				if len(changes) > 0 {
+					logger.Infof("[Lunaris] %d modpack modification(s) detected since last launch. Requesting user action...", len(changes))
+					decisions, cancelled, pErr := gui.ShowChangePrompt(gui.PromptOptions{
+						InstanceDir:  gameDir,
+						InstanceName: filepath.Base(gameDir),
+						Changes:      changes,
+						IsCLI:        isCLI,
+						Logger:       logger.AsFunc(),
+					})
+					if cancelled {
+						logger.Infof("[Lunaris] Launch cancelled by user during mod change review.")
+						_ = logger.Sync()
+						_ = logger.Close()
+						os.Exit(0)
+					}
+					if pErr == nil && decisions != nil {
+						_ = modtracker.ApplyDecisions(gameDir, state, decisions, changes)
 					}
 				}
 			} else {
@@ -320,12 +346,14 @@ func runInjector(args []string, siblingRealJava string) {
 			}
 		} else {
 			remoteMap := remoteM.FilteredMap(features)
+			var syncErr error
 
 			if stateErr == modtracker.ErrNoState {
 				// First run: Establish baseline without prompting the user
 				logger.Infof("[Lunaris] First run detected: Establishing baseline sync with server modpack.")
-				if err := s.SyncWithManifest(ctx, remoteM); err != nil {
-					logger.Errorf("[Lunaris] Initial sync failed: %v", err)
+				syncErr = s.SyncWithManifest(ctx, remoteM)
+				if syncErr != nil {
+					logger.Errorf("[Lunaris] Initial sync failed: %v", syncErr)
 				} else {
 					newState, bErr := modtracker.CreateInitialBaseline(gameDir, remoteMap)
 					if bErr != nil {
@@ -367,20 +395,43 @@ func runInjector(args []string, siblingRealJava string) {
 				// Apply current user rules to the syncer
 				s.SetUserRules(&state.UserRules)
 
-				if err := s.SyncWithManifest(ctx, remoteM); err != nil {
-					logger.Errorf("[Lunaris] Sync failed: %v", err)
-					if !cfg.OfflineLaunch {
-						logger.Errorf("[Lunaris] Offline launch is disabled. Aborting startup.")
-						_ = logger.Sync()
-						_ = logger.Close()
-						os.Exit(1)
-					}
+				syncErr = s.SyncWithManifest(ctx, remoteM)
+				if syncErr != nil {
+					logger.Errorf("[Lunaris] Sync failed: %v", syncErr)
 				} else {
 					// Refresh baseline files with server manifest
 					if bErr := modtracker.UpdateBaseline(gameDir, state, remoteMap); bErr != nil {
 						logger.Warnf("[Lunaris] Warning: Failed to update baseline snapshot: %v", bErr)
 					}
 				}
+			}
+
+			// STRICT INTEGRITY CHECK: All required mods must be present on disk before launching!
+			verifyRes, vErr := s.VerifyRequiredFiles(remoteM)
+			if vErr == nil && verifyRes.HasMissingMods() {
+				logger.Errorf("==================================================")
+				logger.Errorf("[Lunaris] FATAL ERROR: Modpack integrity check failed!")
+				logger.Errorf("[Lunaris] %d required mod(s) are missing or corrupt on disk:", len(verifyRes.MissingMods))
+				for _, m := range verifyRes.MissingMods {
+					logger.Errorf("[Lunaris]   - MISSING: %s", m)
+				}
+				for _, c := range verifyRes.CorruptFiles {
+					logger.Errorf("[Lunaris]   - CORRUPT: %s", c)
+				}
+				logger.Errorf("[Lunaris] Minecraft launch ABORTED to prevent game crash and world corruption.")
+				logger.Errorf("[Lunaris] Any mod existing on the server must be installed and present.")
+				logger.Errorf("[Lunaris] Please check your internet connection and re-run to complete installation.")
+				logger.Errorf("==================================================")
+				_ = logger.Sync()
+				_ = logger.Close()
+				os.Exit(1)
+			}
+
+			if syncErr != nil && !cfg.OfflineLaunch {
+				logger.Errorf("[Lunaris] Sync encountered errors and offline launch is disabled. Aborting startup.")
+				_ = logger.Sync()
+				_ = logger.Close()
+				os.Exit(1)
 			}
 		}
 	}
@@ -999,7 +1050,7 @@ func cmdGenerate(args []string) {
 	}
 
 	fmt.Printf("Scanning '%s' and generating manifest...\n", absDir)
-	m, err := manifest.ScanDirectory(absDir, syncDirs, nil)
+	m, err := manifest.ScanServerDirectory(absDir, syncDirs, nil)
 	if err != nil {
 		fmt.Printf("Scan error: %v\n", err)
 		os.Exit(1)
@@ -1011,13 +1062,26 @@ func cmdGenerate(args []string) {
 	}
 
 	var totalBytes int64
+	var mappedDisabledCount, optionalCount int
 	for _, f := range m.Files {
 		totalBytes += f.Size
+		if f.Feature != "" {
+			optionalCount++
+		}
+		if f.DestPath != "" && strings.HasSuffix(strings.ToLower(f.Path), ".disabled") {
+			mappedDisabledCount++
+		}
 	}
 
 	fmt.Println("✓ Manifest generated successfully!")
 	fmt.Printf("  Output file : %s\n", outFile)
 	fmt.Printf("  Files tracked: %d\n", len(m.Files))
+	if mappedDisabledCount > 0 {
+		fmt.Printf("  Client-only (.disabled): %d (mapped to active .jar for clients)\n", mappedDisabledCount)
+	}
+	if optionalCount > 0 {
+		fmt.Printf("  Optional feature files: %d\n", optionalCount)
+	}
 	fmt.Printf("  Total size  : %.2f MB\n", float64(totalBytes)/(1024*1024))
 }
 

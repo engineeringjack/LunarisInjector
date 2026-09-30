@@ -9,7 +9,7 @@ import (
 
 const ConfigFileName = "lunaris.json"
 const DefaultServerURL = "https://lunaris.csfrederick.com"
-var Version = "1.0.5"
+var Version = "1.0.6"
 
 // Config contains the configuration settings for LunarisInjector.
 type Config struct {
@@ -63,7 +63,7 @@ func DefaultConfig() *Config {
 		DeleteExtra:   true,
 		IgnoreFiles:   []string{},
 		OfflineLaunch: true,
-		TimeoutSec:    10,
+		TimeoutSec:    60,
 		EnableVR:      false,
 		AutoUpdate:    true,
 		GitHubRepo:    "engineeringjack/LunarisInjector",
@@ -83,7 +83,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.TimeoutSec <= 0 {
-		cfg.TimeoutSec = 10
+		cfg.TimeoutSec = 60
 	}
 	if len(cfg.SyncDirs) == 0 {
 		cfg.SyncDirs = []string{"mods", "config", "global_packs"}

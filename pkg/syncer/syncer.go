@@ -53,15 +53,24 @@ func New(opts SyncOptions) *Syncer {
 		}
 	}
 
-	timeout := time.Duration(opts.Config.TimeoutSec) * time.Second
-	if timeout <= 0 {
-		timeout = 10 * time.Second
+	timeout := 60 * time.Second
+	if opts.Config != nil && opts.Config.TimeoutSec > 0 {
+		timeout = time.Duration(opts.Config.TimeoutSec) * time.Second
+	}
+
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
 	return &Syncer{
 		opts: opts,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Transport: transport,
+			Timeout:   timeout,
 		},
 	}
 }
@@ -243,7 +252,8 @@ func (s *Syncer) downloadFiles(ctx context.Context, downloads []manifest.FileEnt
 	close(jobs)
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(downloads))
+	var errsMu sync.Mutex
+	var downloadErrors []error
 
 	baseURL := strings.TrimRight(s.opts.Config.ServerURL, "/")
 
@@ -262,12 +272,34 @@ func (s *Syncer) downloadFiles(ctx context.Context, downloads []manifest.FileEnt
 				clientPath := entry.ClientPath()
 				targetPath := filepath.Join(s.opts.GameDir, filepath.FromSlash(clientPath))
 
+				// Optimization: If local file exists with .disabled suffix and matches expected SHA256,
+				// rename it to targetPath instead of re-downloading over the network.
+				disabledLocal := targetPath + ".disabled"
+				if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+					if dInfo, dErr := os.Stat(disabledLocal); dErr == nil && !dInfo.IsDir() {
+						dHash, _, dHashErr := manifest.ComputeSHA256(disabledLocal)
+						if dHashErr == nil && strings.EqualFold(dHash, entry.SHA256) {
+							if rErr := os.Rename(disabledLocal, targetPath); rErr == nil {
+								done := atomic.AddInt64(&completedCount, 1)
+								curBytes := atomic.AddInt64(&completedBytes, entry.Size)
+								s.opts.Logger("[Lunaris] Enabled existing local file: %s (%d/%d)", clientPath, done, totalCount)
+								if s.opts.OnProgress != nil {
+									s.opts.OnProgress(clientPath, int(done), int(totalCount), curBytes, totalBytes)
+								}
+								continue
+							}
+						}
+					}
+				}
+
 				s.opts.Logger("[Lunaris] Downloading: %s (%.2f MB)...", clientPath, float64(entry.Size)/(1024*1024))
 
-				err := s.downloadSingleFile(ctx, downloadURL, targetPath, entry.SHA256)
+				err := s.downloadSingleFileWithRetry(ctx, downloadURL, targetPath, entry.SHA256)
 				if err != nil {
-					errCh <- fmt.Errorf("failed to download %s: %w", clientPath, err)
-					return
+					errsMu.Lock()
+					downloadErrors = append(downloadErrors, fmt.Errorf("%s: %w", clientPath, err))
+					errsMu.Unlock()
+					continue
 				}
 
 				done := atomic.AddInt64(&completedCount, 1)
@@ -283,14 +315,49 @@ func (s *Syncer) downloadFiles(ctx context.Context, downloads []manifest.FileEnt
 	}
 
 	wg.Wait()
-	close(errCh)
 
-	if len(errCh) > 0 {
-		return <-errCh
+	if len(downloadErrors) > 0 {
+		s.opts.Logger("[Lunaris] Download failures encountered (%d file(s) failed):", len(downloadErrors))
+		for _, e := range downloadErrors {
+			s.opts.Logger("[Lunaris]   - %v", e)
+		}
+		return fmt.Errorf("%d file(s) failed to download (first error: %v)", len(downloadErrors), downloadErrors[0])
 	}
 
 	s.opts.Logger("[Lunaris] All %d updates downloaded and verified successfully!", totalCount)
 	return nil
+}
+
+func (s *Syncer) downloadSingleFileWithRetry(ctx context.Context, fileURL, targetPath, expectedHash string) error {
+	const maxAttempts = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		err := s.downloadSingleFile(ctx, fileURL, targetPath, expectedHash)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if attempt < maxAttempts {
+			backoff := time.Duration(attempt) * time.Second
+			s.opts.Logger("[Lunaris] Download attempt %d/%d for %s failed: %v. Retrying in %v...",
+				attempt, maxAttempts, filepath.Base(targetPath), err, backoff)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+	}
+
+	return fmt.Errorf("failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func (s *Syncer) downloadSingleFile(ctx context.Context, fileURL, targetPath, expectedHash string) error {
@@ -346,6 +413,95 @@ func (s *Syncer) downloadSingleFile(ctx context.Context, fileURL, targetPath, ex
 	}
 
 	return nil
+}
+
+// VerificationResult contains the findings of an instance integrity check.
+type VerificationResult struct {
+	MissingMods    []string
+	MissingConfigs []string
+	MissingOther   []string
+	CorruptFiles   []string
+}
+
+// HasMissingMods returns true if any required mod is missing or corrupt.
+func (v VerificationResult) HasMissingMods() bool {
+	return len(v.MissingMods) > 0 || len(v.CorruptFiles) > 0
+}
+
+// TotalIssues returns the total count of missing or corrupt files.
+func (v VerificationResult) TotalIssues() int {
+	return len(v.MissingMods) + len(v.MissingConfigs) + len(v.MissingOther) + len(v.CorruptFiles)
+}
+
+// VerifyRequiredFiles checks that all required files in the remote manifest exist on disk.
+func (s *Syncer) VerifyRequiredFiles(remote *manifest.Manifest) (VerificationResult, error) {
+	var res VerificationResult
+	if remote == nil {
+		return res, errors.New("remote manifest is nil")
+	}
+
+	var features []string
+	if s.opts.Config.EnableVR {
+		features = append(features, "vr")
+	}
+
+	remoteMap := remote.FilteredMap(features)
+	for clientPath, entry := range remoteMap {
+		// If user explicitly chose to keep this server pack mod removed, do not fail
+		if s.opts.UserRules != nil && s.opts.UserRules.IsKeepRemoved(clientPath) {
+			continue
+		}
+
+		fullPath := filepath.Join(s.opts.GameDir, filepath.FromSlash(clientPath))
+		fi, err := os.Stat(fullPath)
+		if os.IsNotExist(err) {
+			if strings.HasPrefix(clientPath, "mods/") {
+				res.MissingMods = append(res.MissingMods, clientPath)
+			} else if strings.HasPrefix(clientPath, "config/") {
+				res.MissingConfigs = append(res.MissingConfigs, clientPath)
+			} else {
+				res.MissingOther = append(res.MissingOther, clientPath)
+			}
+		} else if err != nil {
+			res.CorruptFiles = append(res.CorruptFiles, fmt.Sprintf("%s (%v)", clientPath, err))
+		} else if fi.Size() == 0 && entry.Size > 0 {
+			res.CorruptFiles = append(res.CorruptFiles, fmt.Sprintf("%s (0 bytes on disk, expected %d)", clientPath, entry.Size))
+		}
+	}
+
+	return res, nil
+}
+
+// VerifyOfflineBaseline checks that baseline files exist locally when offline.
+func (s *Syncer) VerifyOfflineBaseline(state *modtracker.State) VerificationResult {
+	var res VerificationResult
+	if state == nil {
+		return res
+	}
+
+	for clientPath, baseline := range state.BaselineFiles {
+		if s.opts.UserRules != nil && s.opts.UserRules.IsKeepRemoved(clientPath) {
+			continue
+		}
+
+		fullPath := filepath.Join(s.opts.GameDir, filepath.FromSlash(clientPath))
+		fi, err := os.Stat(fullPath)
+		if os.IsNotExist(err) {
+			if strings.HasPrefix(clientPath, "mods/") {
+				res.MissingMods = append(res.MissingMods, clientPath)
+			} else if strings.HasPrefix(clientPath, "config/") {
+				res.MissingConfigs = append(res.MissingConfigs, clientPath)
+			} else {
+				res.MissingOther = append(res.MissingOther, clientPath)
+			}
+		} else if err != nil {
+			res.CorruptFiles = append(res.CorruptFiles, fmt.Sprintf("%s (%v)", clientPath, err))
+		} else if fi.Size() == 0 && baseline.Size > 0 {
+			res.CorruptFiles = append(res.CorruptFiles, fmt.Sprintf("%s (0 bytes)", clientPath))
+		}
+	}
+
+	return res
 }
 
 func buildFileURL(baseURL, relPath string) string {

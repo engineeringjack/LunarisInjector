@@ -118,6 +118,16 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 				}
 			}
 
+			// In server repositories, client-only mods are stored as .jar.disabled so the dedicated
+			// server does not crash on startup. When sending to clients, map DestPath to the active .jar.
+			targetForClient := destPath
+			if targetForClient == "" {
+				targetForClient = normRel
+			}
+			if strings.HasSuffix(strings.ToLower(targetForClient), ".disabled") {
+				destPath = targetForClient[:len(targetForClient)-len(".disabled")]
+			}
+
 			// Check cache
 			cached, ok := s.fileCache[normRel]
 			if ok && cached.modTime.Equal(fi.ModTime()) && cached.size == fi.Size() {
@@ -815,6 +825,27 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() {
+		// Fallback resolution for client-only / disabled mods:
+		// If requested without .disabled (e.g. "mods/foo.jar"), check if "mods/foo.jar.disabled" exists
+		if !strings.HasSuffix(strings.ToLower(fullPath), ".disabled") {
+			altPath := fullPath + ".disabled"
+			if altInfo, altErr := os.Stat(altPath); altErr == nil && !altInfo.IsDir() {
+				fullPath = altPath
+				info = altInfo
+				err = nil
+			}
+		} else {
+			// If requested with .disabled (e.g. "mods/foo.jar.disabled"), check if "mods/foo.jar" exists
+			altPath := strings.TrimSuffix(fullPath, ".disabled")
+			if altInfo, altErr := os.Stat(altPath); altErr == nil && !altInfo.IsDir() {
+				fullPath = altPath
+				info = altInfo
+				err = nil
+			}
+		}
+	}
+
 	if err != nil || info.IsDir() {
 		// Smart fallback for installer downloads:
 		// If requested from /installers/ and file does not exist locally,

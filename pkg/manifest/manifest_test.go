@@ -141,3 +141,52 @@ func TestScanDirectoryWithOptional(t *testing.T) {
 	}
 }
 
+func TestScanServerDirectoryWithDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	modsDir := filepath.Join(tmp, "mods")
+	if err := os.MkdirAll(modsDir, 0755); err != nil {
+		t.Fatalf("failed to create mods dir: %v", err)
+	}
+
+	sharedMod := filepath.Join(modsDir, "shared.jar")
+	clientOnlyMod := filepath.Join(modsDir, "client_only.jar.disabled")
+	_ = os.WriteFile(sharedMod, []byte("shared mod content"), 0644)
+	_ = os.WriteFile(clientOnlyMod, []byte("client only content"), 0644)
+
+	// 1. Regular ScanDirectory (e.g. client local scan) preserves actual filenames
+	localM, err := ScanDirectory(tmp, []string{"mods"}, nil)
+	if err != nil {
+		t.Fatalf("ScanDirectory failed: %v", err)
+	}
+	localMap := localM.FileMap()
+	if _, ok := localMap["mods/shared.jar"]; !ok {
+		t.Errorf("expected mods/shared.jar in local map")
+	}
+	if _, ok := localMap["mods/client_only.jar.disabled"]; !ok {
+		t.Errorf("expected mods/client_only.jar.disabled in local map without server mapping")
+	}
+
+	// 2. ScanServerDirectory maps .disabled to active .jar for client installation
+	serverM, err := ScanServerDirectory(tmp, []string{"mods"}, nil)
+	if err != nil {
+		t.Fatalf("ScanServerDirectory failed: %v", err)
+	}
+	serverMap := serverM.FileMap()
+	if _, ok := serverMap["mods/shared.jar"]; !ok {
+		t.Errorf("expected mods/shared.jar in server map")
+	}
+	clientEntry, ok := serverMap["mods/client_only.jar"]
+	if !ok {
+		t.Fatalf("expected mods/client_only.jar in server map (mapped from .disabled)")
+	}
+	if clientEntry.Path != "mods/client_only.jar.disabled" {
+		t.Errorf("expected Path to be mods/client_only.jar.disabled, got %s", clientEntry.Path)
+	}
+	if clientEntry.DestPath != "mods/client_only.jar" {
+		t.Errorf("expected DestPath to be mods/client_only.jar, got %s", clientEntry.DestPath)
+	}
+	if clientEntry.ClientPath() != "mods/client_only.jar" {
+		t.Errorf("expected ClientPath to be mods/client_only.jar, got %s", clientEntry.ClientPath())
+	}
+}
+

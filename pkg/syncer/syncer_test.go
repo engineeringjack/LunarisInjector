@@ -333,4 +333,44 @@ func TestSyncerUserRules(t *testing.T) {
 	}
 }
 
+func TestVerifyRequiredFiles(t *testing.T) {
+	tmpGameDir := t.TempDir()
+	modsDir := filepath.Join(tmpGameDir, "mods")
+	_ = os.MkdirAll(modsDir, 0755)
+
+	// Create only 1 mod locally
+	_ = os.WriteFile(filepath.Join(modsDir, "present.jar"), []byte("present mod"), 0644)
+
+	remoteM := &manifest.Manifest{
+		Version: 1,
+		Files: []manifest.FileEntry{
+			{Path: "mods/present.jar", SHA256: "abc", Size: 11},
+			{Path: "mods/missing.jar", SHA256: "def", Size: 200},
+			{Path: "config/missing.json", SHA256: "ghi", Size: 50},
+		},
+	}
+
+	s := New(SyncOptions{
+		Config:  config.DefaultConfig(),
+		GameDir: tmpGameDir,
+	})
+
+	res, err := s.VerifyRequiredFiles(remoteM)
+	if err != nil {
+		t.Fatalf("VerifyRequiredFiles failed: %v", err)
+	}
+
+	if !res.HasMissingMods() {
+		t.Errorf("expected HasMissingMods to be true")
+	}
+
+	if len(res.MissingMods) != 1 || res.MissingMods[0] != "mods/missing.jar" {
+		t.Errorf("expected MissingMods to have mods/missing.jar, got %v", res.MissingMods)
+	}
+
+	if len(res.MissingConfigs) != 1 || res.MissingConfigs[0] != "config/missing.json" {
+		t.Errorf("expected MissingConfigs to have config/missing.json, got %v", res.MissingConfigs)
+	}
+}
+
 
