@@ -230,11 +230,16 @@ func FindRealJava(configuredPath string) (string, error) {
 		}
 	} else if runtime.GOOS == "darwin" {
 		searchPatterns = []string{
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "Contents", "Home", "bin", "java"),
 			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "Contents", "Home", "bin", "java"),
 			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "java-runtime-gamma", "bin", "java"),
-			filepath.Join(homeDir, "Library", "Application Support", "minecraft", "runtime", "*", "*", "bin", "java"),
+			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "Contents", "Home", "bin", "java"),
 			filepath.Join(homeDir, "Documents", "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
+			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "Contents", "Home", "bin", "java"),
 			filepath.Join(homeDir, "curseforge", "minecraft", "Install", "java", "*", "bin", "java"),
+			filepath.Join(homeDir, "Library", "Application Support", "minecraft", "runtime", "*", "*", "Contents", "Home", "bin", "java"),
+			filepath.Join(homeDir, "Library", "Application Support", "minecraft", "runtime", "*", "*", "bin", "java"),
 			"/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java",
 		}
 	} else {

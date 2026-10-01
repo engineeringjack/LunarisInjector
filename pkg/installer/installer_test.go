@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/engineeringjack/LunarisInjector/pkg/config"
@@ -252,6 +253,45 @@ func TestCountExistingMods(t *testing.T) {
 
 	if count := CountExistingMods(instanceDir); count != 2 {
 		t.Errorf("expected 2 mods, got %d", count)
+	}
+}
+
+func TestFindCurseForgeJavaRuntimeDirs(t *testing.T) {
+	targetName := "java"
+	if runtime.GOOS == "windows" {
+		targetName = "javaw.exe"
+	}
+
+	// 1. Standard layout: <mcRoot>/Install/java/java-runtime-gamma/bin/<targetName>
+	tmpDirStandard := t.TempDir()
+	instStandard := filepath.Join(tmpDirStandard, "Instances", "StandardInstance")
+	_ = os.MkdirAll(instStandard, 0755)
+	stdBin := filepath.Join(tmpDirStandard, "Install", "java", "java-runtime-gamma", "bin")
+	_ = os.MkdirAll(stdBin, 0755)
+	_ = os.WriteFile(filepath.Join(stdBin, targetName), []byte("mock-java"), 0755)
+
+	dirsStandard := FindCurseForgeJavaRuntimeDirs(instStandard)
+	if len(dirsStandard) == 0 {
+		t.Fatalf("expected to find runtime dirs for standard layout, got empty")
+	}
+	if filepath.Clean(dirsStandard[0]) != filepath.Clean(stdBin) {
+		t.Errorf("expected %s, got %s", stdBin, dirsStandard[0])
+	}
+
+	// 2. macOS bundle layout: <mcRoot>/Install/java/java-runtime-gamma/Contents/Home/bin/<targetName>
+	tmpDirMac := t.TempDir()
+	instMac := filepath.Join(tmpDirMac, "Instances", "MacInstance")
+	_ = os.MkdirAll(instMac, 0755)
+	macBin := filepath.Join(tmpDirMac, "Install", "java", "java-runtime-gamma", "Contents", "Home", "bin")
+	_ = os.MkdirAll(macBin, 0755)
+	_ = os.WriteFile(filepath.Join(macBin, targetName), []byte("mock-java"), 0755)
+
+	dirsMac := FindCurseForgeJavaRuntimeDirs(instMac)
+	if len(dirsMac) == 0 {
+		t.Fatalf("expected to find runtime dirs for macOS bundle layout, got empty")
+	}
+	if filepath.Clean(dirsMac[0]) != filepath.Clean(macBin) {
+		t.Errorf("expected %s, got %s", macBin, dirsMac[0])
 	}
 }
 

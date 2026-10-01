@@ -103,10 +103,7 @@ func DetectInstances() []InstanceInfo {
 	return instances
 }
 
-func getCurseForgeDirectories(homeDir string) []string {
-	var candidateDirs []string
-
-	// 1. Inspect CurseForge's own storage.json configuration
+func getCurseForgeStoragePaths(homeDir string) []string {
 	var storagePaths []string
 	if runtime.GOOS == "windows" {
 		appData := os.Getenv("APPDATA")
@@ -126,6 +123,14 @@ func getCurseForgeDirectories(homeDir string) []string {
 			filepath.Join(homeDir, ".var", "app", "com.curseforge.CurseForge", "config", "CurseForge", "storage.json"),
 		)
 	}
+	return storagePaths
+}
+
+func getCurseForgeDirectories(homeDir string) []string {
+	var candidateDirs []string
+
+	// 1. Inspect CurseForge's own storage.json configuration
+	storagePaths := getCurseForgeStoragePaths(homeDir)
 
 	for _, sPath := range storagePaths {
 		if data, err := os.ReadFile(sPath); err == nil {
@@ -596,12 +601,16 @@ func Install(opts InstallConfig) error {
 	}
 	if shouldHook {
 		runtimeDirs := FindCurseForgeJavaRuntimeDirs(opts.InstanceDir)
-		for _, rDir := range runtimeDirs {
-			hooked, err := HookCurseForgeJava(rDir, lunarisBin, opts.InstanceDir)
-			if err != nil {
-				opts.log("[Installer] Warning: Failed to hook CurseForge Java at %s: %v", rDir, err)
-			} else if hooked {
-				opts.log("[Installer] Successfully hooked CurseForge Java runtime at: %s", rDir)
+		if len(runtimeDirs) == 0 {
+			opts.log("[Installer] Notice: No CurseForge Java runtimes found to hook for instance: %s", opts.InstanceDir)
+		} else {
+			for _, rDir := range runtimeDirs {
+				hooked, err := HookCurseForgeJava(rDir, lunarisBin, opts.InstanceDir)
+				if err != nil {
+					opts.log("[Installer] Warning: Failed to hook CurseForge Java at %s: %v", rDir, err)
+				} else if hooked {
+					opts.log("[Installer] Successfully hooked CurseForge Java runtime at: %s", rDir)
+				}
 			}
 		}
 	}
@@ -813,7 +822,7 @@ type CurseForgeHookMarker struct {
 	Instances []string `json:"instances"`
 }
 
-// FindCurseForgeJavaRuntimeDirs returns bin directories for CurseForge Java 17 runtimes (e.g. java-runtime-gamma).
+// FindCurseForgeJavaRuntimeDirs returns bin directories for CurseForge Java runtimes (e.g. java-runtime-gamma).
 // It only returns runtimes if the provided instanceDir is associated with CurseForge.
 func FindCurseForgeJavaRuntimeDirs(instanceDir string) []string {
 	if instanceDir == "" {
@@ -825,32 +834,13 @@ func FindCurseForgeJavaRuntimeDirs(instanceDir string) []string {
 	mcRoot := filepath.Dir(instParent)
 
 	// 1. Direct relative check: instanceDir is in <mcRoot>/Instances/<name>
-	// where <mcRoot>/Install/java/java-runtime-gamma/bin exists.
-	gammaBin := filepath.Join(mcRoot, "Install", "java", "java-runtime-gamma", "bin")
-	if fi, err := os.Stat(gammaBin); err == nil && fi.IsDir() {
-		if containsJavaBinary(gammaBin) {
-			return []string{gammaBin}
-		}
+	if runtimes := findCurseForgeRuntimeBinDirs(mcRoot); len(runtimes) > 0 {
+		return runtimes
 	}
 
 	// 2. Check storage.json to see if instanceDir is inside CurseForge's configured minecraftRoot
 	homeDir, _ := os.UserHomeDir()
-	var storagePaths []string
-	if runtime.GOOS == "windows" {
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			storagePaths = append(storagePaths, filepath.Join(appData, "CurseForge", "storage.json"))
-		}
-		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
-			storagePaths = append(storagePaths, filepath.Join(userProfile, "AppData", "Roaming", "CurseForge", "storage.json"))
-		}
-	} else if runtime.GOOS == "darwin" {
-		storagePaths = append(storagePaths, filepath.Join(homeDir, "Library", "Application Support", "CurseForge", "storage.json"))
-	} else {
-		storagePaths = append(storagePaths,
-			filepath.Join(homeDir, ".config", "CurseForge", "storage.json"),
-			filepath.Join(homeDir, ".var", "app", "com.curseforge.CurseForge", "config", "CurseForge", "storage.json"),
-		)
-	}
+	storagePaths := getCurseForgeStoragePaths(homeDir)
 
 	for _, sPath := range storagePaths {
 		if data, err := os.ReadFile(sPath); err == nil {
@@ -865,9 +855,8 @@ func FindCurseForgeJavaRuntimeDirs(instanceDir string) []string {
 						// Only match if instanceDir is inside this CurseForge root
 						rel, err := filepath.Rel(cleanMCRoot, instClean)
 						if err == nil && !strings.HasPrefix(rel, "..") {
-							cand := filepath.Join(cleanMCRoot, "Install", "java", "java-runtime-gamma", "bin")
-							if fi, err := os.Stat(cand); err == nil && fi.IsDir() && containsJavaBinary(cand) {
-								return []string{cand}
+							if runtimes := findCurseForgeRuntimeBinDirs(cleanMCRoot); len(runtimes) > 0 {
+								return runtimes
 							}
 						}
 					}
@@ -877,6 +866,54 @@ func FindCurseForgeJavaRuntimeDirs(instanceDir string) []string {
 	}
 
 	return nil
+}
+
+// findCurseForgeRuntimeBinDirs locates all valid Java bin directories under <mcRoot>/Install/java.
+// It supports both standard directory layouts (bin/) and macOS bundle layouts (Contents/Home/bin/).
+func findCurseForgeRuntimeBinDirs(mcRoot string) []string {
+	var results []string
+	seen := make(map[string]bool)
+
+	addCandidate := func(rtDir string) {
+		var candidates []string
+		if runtime.GOOS == "darwin" {
+			candidates = []string{
+				filepath.Join(rtDir, "Contents", "Home", "bin"),
+				filepath.Join(rtDir, "bin"),
+			}
+		} else {
+			candidates = []string{
+				filepath.Join(rtDir, "bin"),
+				filepath.Join(rtDir, "Contents", "Home", "bin"),
+			}
+		}
+		for _, cand := range candidates {
+			clean := filepath.Clean(cand)
+			if !seen[clean] {
+				if fi, err := os.Stat(clean); err == nil && fi.IsDir() && containsJavaBinary(clean) {
+					seen[clean] = true
+					results = append(results, clean)
+					break
+				}
+			}
+		}
+	}
+
+	// 1. Check java-runtime-gamma first (Java 17 standard for Minecraft 1.20.1)
+	gammaDir := filepath.Join(mcRoot, "Install", "java", "java-runtime-gamma")
+	addCandidate(gammaDir)
+
+	// 2. Also check any other runtimes in <mcRoot>/Install/java (e.g. Jre_21, java-runtime-delta, etc.)
+	javaBase := filepath.Join(mcRoot, "Install", "java")
+	if entries, err := os.ReadDir(javaBase); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && e.Name() != "java-runtime-gamma" {
+				addCandidate(filepath.Join(javaBase, e.Name()))
+			}
+		}
+	}
+
+	return results
 }
 
 func containsJavaBinary(binDir string) bool {
