@@ -441,23 +441,12 @@ func (s *Server) Start() error {
 		Handler: s.Handler(),
 	}
 
-	// Launch web app window in background with fail-safe watchdog
+	// Launch web app window in background
 	if s.opts.OpenBrowser {
 		go func() {
 			time.Sleep(150 * time.Millisecond)
 			if err := OpenBrowser(url); err != nil {
 				s.opts.Logger("[Lunaris GUI] App window launch returned error: %v; opening default browser...", err)
-				_ = OpenDefaultBrowser(url)
-			}
-
-			// Watchdog: after 2 seconds, if no browser has connected, launch default browser fallback!
-			time.Sleep(2 * time.Second)
-			s.mu.Lock()
-			connected := s.hasConnected
-			s.mu.Unlock()
-
-			if !connected {
-				s.opts.Logger("[Lunaris GUI] App window did not connect within 2s; launching default browser fallback...")
 				_ = OpenDefaultBrowser(url)
 			}
 		}()
