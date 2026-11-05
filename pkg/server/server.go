@@ -18,20 +18,27 @@ import (
 
 // ServerOptions configures the sync server.
 type ServerOptions struct {
-	RootDir     string
-	SyncDirs    []string
-	Port        int
-	Host        string
-	AutoRefresh time.Duration
+	RootDir      string
+	SyncDirs     []string
+	Port         int
+	Host         string
+	AutoRefresh  time.Duration
+	AdminUser    string
+	AdminPass    string
+	StartCommand string
+	AutoStartMC  bool
 }
 
 // Server provides dynamic file serving and manifest generation.
 type Server struct {
-	opts       ServerOptions
-	mu         sync.RWMutex
-	manifest   *manifest.Manifest
-	fileCache  map[string]cachedFile
+	opts        ServerOptions
+	mu          sync.RWMutex
+	manifest    *manifest.Manifest
+	fileCache   map[string]cachedFile
 	lastScanned time.Time
+	authMgr     *AuthManager
+	modMgr      *ModManager
+	processMgr  *ProcessManager
 }
 
 type cachedFile struct {
@@ -52,9 +59,20 @@ func New(opts ServerOptions) *Server {
 		opts.AutoRefresh = 5 * time.Second
 	}
 
+	authMgr, _ := NewAuthManager(opts.RootDir)
+	if opts.AdminUser != "" && opts.AdminPass != "" && authMgr != nil {
+		_ = authMgr.SetCredentials(opts.AdminUser, opts.AdminPass)
+	}
+
+	modMgr, _ := NewModManager(opts.RootDir)
+	processMgr := NewProcessManager(opts.RootDir, opts.StartCommand)
+
 	return &Server{
-		opts:      opts,
-		fileCache: make(map[string]cachedFile),
+		opts:       opts,
+		fileCache:  make(map[string]cachedFile),
+		authMgr:    authMgr,
+		modMgr:     modMgr,
+		processMgr: processMgr,
 	}
 }
 
@@ -79,6 +97,32 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 		if !hasOpt {
 			scanDirs = append(scanDirs, "optional")
 		}
+	}
+
+	clientDir := filepath.Join(s.opts.RootDir, "client-only")
+	if info, err := os.Stat(clientDir); err == nil && info.IsDir() {
+		hasClient := false
+		for _, d := range scanDirs {
+			if d == "client-only" {
+				hasClient = true
+				break
+			}
+		}
+		if !hasClient {
+			scanDirs = append(scanDirs, "client-only")
+		}
+	}
+
+	serverOnlyList, _ := ReadListFile(filepath.Join(s.opts.RootDir, serverOnlyFileName))
+	serverOnlyMap := make(map[string]bool)
+	for _, so := range serverOnlyList {
+		serverOnlyMap[strings.ToLower(CleanModName(so))] = true
+	}
+
+	clientOnlyList, _ := ReadListFile(filepath.Join(s.opts.RootDir, clientOnlyFileName))
+	clientOnlyMap := make(map[string]bool)
+	for _, co := range clientOnlyList {
+		clientOnlyMap[strings.ToLower(CleanModName(co))] = true
 	}
 
 	for _, subDir := range scanDirs {
@@ -108,6 +152,13 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 				return nil
 			}
 
+			cleanBase := strings.ToLower(CleanModName(filepath.Base(normRel)))
+
+			// Exclude server-only mods from client sync manifest
+			if strings.HasPrefix(normRel, "server-only/") || serverOnlyMap[cleanBase] {
+				return nil
+			}
+
 			var feature string
 			var destPath string
 			if strings.HasPrefix(normRel, "optional/") {
@@ -118,8 +169,15 @@ func (s *Server) RefreshManifest() (*manifest.Manifest, error) {
 				}
 			}
 
-			// In server repositories, client-only mods are stored as .jar.disabled so the dedicated
-			// server does not crash on startup. When sending to clients, map DestPath to the active .jar.
+			// Map client-only folder to mods/ for client instances
+			if strings.HasPrefix(normRel, "client-only/") {
+				destPath = "mods/" + CleanModName(filepath.Base(normRel))
+			} else if clientOnlyMap[cleanBase] {
+				destPath = "mods/" + CleanModName(filepath.Base(normRel))
+			}
+
+			// In server repositories, client-only mods can also be stored as .jar.disabled.
+			// When sending to clients, map DestPath to the active .jar.
 			targetForClient := destPath
 			if targetForClient == "" {
 				targetForClient = normRel
@@ -200,6 +258,10 @@ func (s *Server) GetManifest() (*manifest.Manifest, error) {
 // Handler returns an http.Handler serving the manifest and files.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Register Admin Portal routes & APIs
+	adminH := NewAdminHandler(s)
+	adminH.RegisterRoutes(mux)
 
 	// 1. Manifest endpoint
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) {
@@ -655,6 +717,7 @@ func (s *Server) Handler() http.Handler {
             <a href="https://csfrederick.com">Home</a>
             <a href="https://csfrederick.com/minecraft">Minecraft</a>
             <a href="/" class="active">Lunaris Sync</a>
+            <a href="/admin">Admin Portal</a>
             <a href="https://csfrederick.com/contact">Contact</a>
         </div>
     </nav>
@@ -827,15 +890,33 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	info, err := os.Stat(fullPath)
 	if err != nil || info.IsDir() {
 		// Fallback resolution for client-only / disabled mods:
-		// If requested without .disabled (e.g. "mods/foo.jar"), check if "mods/foo.jar.disabled" exists
-		if !strings.HasSuffix(strings.ToLower(fullPath), ".disabled") {
+		// 1. If requested "mods/<file>", check if "client-only/<file>" exists
+		if strings.HasPrefix(cleanRel, "mods") {
+			baseName := filepath.Base(cleanRel)
+			clientOnlyPath := filepath.Join(s.opts.RootDir, "client-only", baseName)
+			if cInfo, cErr := os.Stat(clientOnlyPath); cErr == nil && !cInfo.IsDir() {
+				fullPath = clientOnlyPath
+				info = cInfo
+				err = nil
+			} else {
+				clientOnlyDis := clientOnlyPath + ".disabled"
+				if dInfo, dErr := os.Stat(clientOnlyDis); dErr == nil && !dInfo.IsDir() {
+					fullPath = clientOnlyDis
+					info = dInfo
+					err = nil
+				}
+			}
+		}
+
+		// 2. If requested without .disabled (e.g. "mods/foo.jar"), check if "mods/foo.jar.disabled" exists
+		if err != nil && !strings.HasSuffix(strings.ToLower(fullPath), ".disabled") {
 			altPath := fullPath + ".disabled"
 			if altInfo, altErr := os.Stat(altPath); altErr == nil && !altInfo.IsDir() {
 				fullPath = altPath
 				info = altInfo
 				err = nil
 			}
-		} else {
+		} else if err != nil {
 			// If requested with .disabled (e.g. "mods/foo.jar.disabled"), check if "mods/foo.jar" exists
 			altPath := strings.TrimSuffix(fullPath, ".disabled")
 			if altInfo, altErr := os.Stat(altPath); altErr == nil && !altInfo.IsDir() {
@@ -894,6 +975,14 @@ func (s *Server) Start() error {
 	fmt.Printf("[Lunaris Server] Listening on http://%s\n", addr)
 	fmt.Printf("[Lunaris Server] Serving directory: %s\n", s.opts.RootDir)
 	fmt.Printf("[Lunaris Server] Manifest endpoint: http://%s/manifest.json\n", addr)
+	fmt.Printf("[Lunaris Server] Admin portal: http://%s/admin\n", addr)
+
+	if s.opts.AutoStartMC && s.processMgr != nil {
+		fmt.Printf("[Lunaris Server] Automatically launching Minecraft server...\n")
+		if err := s.processMgr.Start(); err != nil {
+			fmt.Printf("[Lunaris Server] Warning: Failed to auto-start Minecraft server: %v\n", err)
+		}
+	}
 
 	srv := &http.Server{
 		Addr:    addr,

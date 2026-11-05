@@ -151,6 +151,37 @@ func ScanDirectoryWithOptions(baseDir string, subDirs []string, ignorePatterns [
 		subDirs = DefaultSyncDirs
 	}
 
+	scanDirs := append([]string{}, subDirs...)
+	var serverOnlyMap map[string]bool
+	var clientOnlyMap map[string]bool
+
+	if isServerRepo {
+		// If client-only directory exists, include it in scan
+		clientOnlyDir := filepath.Join(baseDir, "client-only")
+		if info, err := os.Stat(clientOnlyDir); err == nil && info.IsDir() {
+			hasClient := false
+			for _, d := range scanDirs {
+				if d == "client-only" {
+					hasClient = true
+					break
+				}
+			}
+			if !hasClient {
+				scanDirs = append(scanDirs, "client-only")
+			}
+		}
+
+		serverOnlyMap = loadListFile(filepath.Join(baseDir, "server-only-mods.txt"))
+		if len(serverOnlyMap) == 0 {
+			serverOnlyMap = loadListFile(filepath.Join(baseDir, "server-only.txt"))
+		}
+
+		clientOnlyMap = loadListFile(filepath.Join(baseDir, "client-only-mods.txt"))
+		if len(clientOnlyMap) == 0 {
+			clientOnlyMap = loadListFile(filepath.Join(baseDir, "client-only.txt"))
+		}
+	}
+
 	gameVersion := "1.20.1"
 	// Try to detect gameVersion from minecraftinstance.json
 	mcJSON := filepath.Join(baseDir, "minecraftinstance.json")
@@ -170,7 +201,7 @@ func ScanDirectoryWithOptions(baseDir string, subDirs []string, ignorePatterns [
 		Files:       []FileEntry{},
 	}
 
-	for _, subDir := range subDirs {
+	for _, subDir := range scanDirs {
 		targetPath := filepath.Join(baseDir, subDir)
 		info, err := os.Stat(targetPath)
 		if os.IsNotExist(err) {
@@ -201,6 +232,13 @@ func ScanDirectoryWithOptions(baseDir string, subDirs []string, ignorePatterns [
 				return nil
 			}
 
+			cleanBase := strings.ToLower(cleanModFilename(filepath.Base(normRel)))
+
+			// Exclude server-only mods from client manifest
+			if isServerRepo && (strings.HasPrefix(normRel, "server-only/") || serverOnlyMap[cleanBase]) {
+				return nil
+			}
+
 			hash, size, err := ComputeSHA256(path)
 			if err != nil {
 				return fmt.Errorf("failed to hash %s: %w", path, err)
@@ -216,9 +254,13 @@ func ScanDirectoryWithOptions(baseDir string, subDirs []string, ignorePatterns [
 				}
 			}
 
-			// In server repositories, client-only mods are stored as .jar.disabled so the dedicated
-			// server does not crash on startup. When sending to clients, map DestPath to the active .jar.
+			// In server repositories, client-only mods are stored in client-only/ or as .jar.disabled.
+			// Map DestPath to active mods/<filename> for clients.
 			if isServerRepo {
+				if strings.HasPrefix(normRel, "client-only/") || clientOnlyMap[cleanBase] {
+					destPath = "mods/" + cleanModFilename(filepath.Base(normRel))
+				}
+
 				targetForClient := destPath
 				if targetForClient == "" {
 					targetForClient = normRel
@@ -278,4 +320,36 @@ func LoadFromBytes(data []byte) (*Manifest, error) {
 		return nil, fmt.Errorf("invalid manifest json: %w", err)
 	}
 	return &m, nil
+}
+
+func cleanModFilename(name string) string {
+	base := filepath.Base(name)
+	if strings.HasSuffix(strings.ToLower(base), ".disabled") {
+		base = base[:len(base)-len(".disabled")]
+	}
+	return base
+}
+
+func loadListFile(path string) map[string]bool {
+	res := make(map[string]bool)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return res
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "//") {
+			continue
+		}
+		fields := strings.Fields(l)
+		if len(fields) > 0 {
+			clean := cleanModFilename(fields[0])
+			if clean != "" {
+				res[strings.ToLower(clean)] = true
+			}
+		}
+	}
+	return res
 }

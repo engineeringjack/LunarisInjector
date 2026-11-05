@@ -991,6 +991,11 @@ func cmdServer(args []string) {
 	dirsFlag := fs.String("dirs", "mods,config,global_packs", "Comma-separated list of directories to sync")
 	portFlag := fs.Int("port", 8080, "Port to listen on")
 	hostFlag := fs.String("host", "0.0.0.0", "Host address to bind to")
+	adminUserFlag := fs.String("admin-user", "", "Admin username for server management GUI")
+	adminPassFlag := fs.String("admin-pass", "", "Admin password for server management GUI")
+	startCmdFlag := fs.String("start-cmd", "", "Minecraft server launch command or script (e.g. ./run.sh)")
+	startServerFlag := fs.Bool("start-server", false, "Automatically start Minecraft server process on launch")
+	openFlag := fs.Bool("open", false, "Open admin portal in browser on launch")
 	_ = fs.Parse(args)
 
 	absDir, err := filepath.Abs(*dirFlag)
@@ -1011,11 +1016,23 @@ func cmdServer(args []string) {
 	}
 
 	srv := server.New(server.ServerOptions{
-		RootDir:  absDir,
-		SyncDirs: syncDirs,
-		Port:     *portFlag,
-		Host:     *hostFlag,
+		RootDir:      absDir,
+		SyncDirs:     syncDirs,
+		Port:         *portFlag,
+		Host:         *hostFlag,
+		AdminUser:    *adminUserFlag,
+		AdminPass:    *adminPassFlag,
+		StartCommand: *startCmdFlag,
+		AutoStartMC:  *startServerFlag,
 	})
+
+	if *openFlag {
+		go func() {
+			time.Sleep(400 * time.Millisecond)
+			adminURL := fmt.Sprintf("http://localhost:%d/admin", *portFlag)
+			_ = gui.OpenBrowser(adminURL)
+		}()
+	}
 
 	if err := srv.Start(); err != nil {
 		fmt.Printf("Server error: %v\n", err)
@@ -1275,7 +1292,7 @@ COMMANDS:
   uninstall     Revert an instance back to normal
   resync        Resync instance, forget all custom modifications, and match server
   update        Check GitHub and update LunarisInjector to the latest release
-  server        Run a built-in sync server with live manifest & file downloads
+  server        Run sync server with web dashboard, live file editor & admin GUI (/admin)
   generate      Generate a static manifest.json from a folder (for Nginx, S3, etc.)
   verify        Check an instance's files against the server without launching
   instances     List all detected CurseForge, Vanilla, and Prism instances
@@ -1297,8 +1314,8 @@ EXAMPLES:
   # 3. Non-interactive install with optional Windows VR (Vivecraft) enabled
   lunaris install --instance ~/.minecraft --vr
 
-  # 4. Host a sync server for players from your modpack folder
-  lunaris server --dir ./my-modpack --port 8080
+  # 4. Host a sync server with admin GUI, encrypted auth, and open port
+  lunaris server --dir ./my-modpack --port 8080 --open
 
   # 5. Check instance sync status
   lunaris verify --instance ~/.minecraft

@@ -22,19 +22,25 @@ When the player clicks **"Play"** in CurseForge, LunarisInjector intercepts the 
 
 ## 🚀 Quick Start Guide
 
-### 1. Server Setup (For Modpack Authors)
+### 1. Server Setup (For Modpack Authors & Admins)
 
 You have two options for hosting files:
 
-#### Option A: Built-in Dynamic Server (Easiest)
-Create a folder containing your `mods/` (and optionally `config/`):
+#### Option A: Built-in Dynamic Server with Admin Portal (Easiest)
+Create or point to a folder containing your Minecraft server files or modpack (`mods/`, `config/`, `run.sh`):
 ```bash
-# Start the sync server on port 8080
-./lunaris server --dir ./my-modpack --port 8080
+# Start the sync server & admin GUI on port 8080
+./lunaris server --dir ./my-modpack --port 8080 --open
 ```
-- Automatically monitors the directory and updates hashes when files change.
+- **Admin Management Portal (`/admin`)**: Web GUI allowing you or an admin to add, remove, or modify mods on the fly and restart the server.
+- **Encrypted Authentication**: Credentials encrypted with AES-256-GCM and salted multi-iteration SHA-256 hashing (`server-auth.json`).
+- **Drag & Drop Uploads**: Drag and drop mod files or entire folders directly into the browser.
+- **Mod Folder Drop Prompt**: When dropping a mod folder, choose to **"Remove all missing"** (Full Sync) or **"Just add"** (Additive).
+- **Client-Only & Server-Only Classification**: Mods are classified as **Both** (default), **Client Only**, or **Server Only**. Filenames are automatically tracked in `client-only-mods.txt` and `server-only-mods.txt` (names only, no hashes) so mods always stay in the correct folder whenever added or removed.
+- **Server Boot Failure Detection & Debugging**: If the Minecraft server fails to boot or crashes, Lunaris prompts with a one-click button to copy the latest log (`logs/latest.log` or crash report) directly to your clipboard for debugging.
+- **Automatic Live Hash Refresh**: Sync manifest updates instantly on the fly without stopping HTTP connections.
 - Serves `http://<your-ip>:8080/manifest.json`.
-- Web Dashboard accessible at `http://<your-ip>:8080/`.
+- Web Dashboard accessible at `http://<your-ip>:8080/` and Admin Portal at `http://<your-ip>:8080/admin`.
 
 #### Option B: Static Web Hosting (Nginx, S3, Cloudflare R2, GitHub)
 Generate a `manifest.json` inside your modpack directory:

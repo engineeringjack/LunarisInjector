@@ -190,3 +190,55 @@ func TestScanServerDirectoryWithDisabled(t *testing.T) {
 	}
 }
 
+func TestScanServerDirectoryWithTextFilesAndFolders(t *testing.T) {
+	tmp := t.TempDir()
+	modsDir := filepath.Join(tmp, "mods")
+	clientDir := filepath.Join(tmp, "client-only")
+	_ = os.MkdirAll(modsDir, 0755)
+	_ = os.MkdirAll(clientDir, 0755)
+
+	// Files:
+	// mods/both.jar (Both)
+	// mods/server-util.jar (Server-only via server-only-mods.txt)
+	// client-only/minimap.jar (Client-only via client-only/ folder)
+	// mods/sound-physics.jar (Client-only via client-only-mods.txt)
+	_ = os.WriteFile(filepath.Join(modsDir, "both.jar"), []byte("both content"), 0644)
+	_ = os.WriteFile(filepath.Join(modsDir, "server-util.jar"), []byte("server util content"), 0644)
+	_ = os.WriteFile(filepath.Join(clientDir, "minimap.jar"), []byte("minimap content"), 0644)
+	_ = os.WriteFile(filepath.Join(modsDir, "sound-physics.jar"), []byte("sound physics content"), 0644)
+
+	_ = os.WriteFile(filepath.Join(tmp, "server-only-mods.txt"), []byte("# Server only\nserver-util.jar\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tmp, "client-only-mods.txt"), []byte("# Client only\nsound-physics.jar\n"), 0644)
+
+	m, err := ScanServerDirectory(tmp, []string{"mods"}, nil)
+	if err != nil {
+		t.Fatalf("ScanServerDirectory failed: %v", err)
+	}
+
+	fMap := m.FileMap()
+
+	// 1. both.jar must be present
+	if _, ok := fMap["mods/both.jar"]; !ok {
+		t.Errorf("expected both.jar in manifest")
+	}
+
+	// 2. server-util.jar must be EXCLUDED
+	if _, ok := fMap["mods/server-util.jar"]; ok {
+		t.Errorf("server-util.jar must be excluded from manifest")
+	}
+
+	// 3. minimap.jar from client-only/ must be mapped to mods/minimap.jar
+	if entry, ok := fMap["mods/minimap.jar"]; !ok {
+		t.Errorf("expected mods/minimap.jar mapped from client-only/")
+	} else if entry.Path != "client-only/minimap.jar" {
+		t.Errorf("expected Path client-only/minimap.jar, got %s", entry.Path)
+	}
+
+	// 4. sound-physics.jar from client-only-mods.txt must be mapped to mods/sound-physics.jar
+	if entry, ok := fMap["mods/sound-physics.jar"]; !ok {
+		t.Errorf("expected mods/sound-physics.jar mapped from client-only-mods.txt")
+	} else if entry.DestPath != "mods/sound-physics.jar" {
+		t.Errorf("expected DestPath mods/sound-physics.jar, got %s", entry.DestPath)
+	}
+}
+
